@@ -129,7 +129,7 @@ Measured on real hardware, saved here so nobody re-derives them:
 
 ## License
 
-Not chosen yet; MIT planned at publication.
+MIT, see [LICENSE](LICENSE).
 
 [CrowPanel 5.79"]: https://www.elecrow.com/crowpanel-5-79-e-paper-hmi-272x792-display.html
 [PlatformIO]: https://platformio.org/
