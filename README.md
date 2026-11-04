@@ -87,7 +87,10 @@ partial window (`0xDC`) is not used: fast BW waves cannot drive black
 on this panel (see "Panel quirks"). Frame composition (protocol
 bitmap -> cascade layout) costs ~100 ms, the RAM upload ~540 ms.
 Orientation follows the factory coordinate model (protocol Y along
-the long axis); flip flags in the constructor default to it.
+the long axis); flip flags in the constructor default to it. The
+measured wave model (0x22 stage bits, 0xF7/0xC7/0xFF/0xDC behavior,
+the cold-start and 0xC7 traps) is written up in
+[notes/waves.md](notes/waves.md).
 
 Two references were studied for the integration: the official Elecrow
 Arduino library for this panel (GoodDisplay-style `EPD_Init`,
@@ -129,7 +132,8 @@ Measured on real hardware, saved here so nobody re-derives them:
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). Studied third-party references are listed
+in [NOTICE](NOTICE.md).
 
 [CrowPanel 5.79"]: https://www.elecrow.com/crowpanel-5-79-e-paper-hmi-272x792-display.html
 [PlatformIO]: https://platformio.org/
