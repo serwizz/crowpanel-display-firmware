@@ -66,3 +66,15 @@ reset+temp before every menu redraw; this firmware does the same in
 Measured cost of one smooth update, end to end: reset+temp ~50 ms,
 frame compose ~90 ms, RAM upload ~540 ms, wave 1660 ms - about
 2.35 s in total.
+
+## How to trust these numbers
+
+Every sequence above also exists in the panel manufacturer's own
+factory firmware for this board: its `EPD_FastMode1Init` is the
+temp_init sequence, its fast update is 0xC7, and it runs reset+temp
+before every menu redraw. That source documents the what but not the
+why - no explanation of the 0x22 stage bits, no timings, no note on
+flashing or ghosting. Register semantics agree with the Solomon
+Systech SSD1683 datasheet. Everything measured on this page (timings,
+flashing, drive directions, the two traps) is our own data from a
+real panel, photo-controlled and reproducible.
