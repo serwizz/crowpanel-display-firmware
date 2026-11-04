@@ -1,62 +1,68 @@
-# SSD1683 wave model on the CrowPanel 5.79 (dual cascade)
+# How screen updates work on this panel
 
-Everything below was measured on a live panel, photo-controlled and
-frame-by-frame. Register `0x22` (Display Update Control 2) is not a
-"wave selector": it is a bitmask of stage bits (0x80 clock / 0x40
-analog / 0x20 load temperature / 0x10 load LUT / 0x08 BW mode /
-0x04 display / 0x02+0x01 disable). What the glass does is determined
-by the stage sequence, the loaded LUT and the color mode.
+Everything on this page was measured on a real CrowPanel 5.79,
+photo-controlled frame by frame. It is kept here so nobody has to
+re-derive it.
 
-## Measured update sequences (factory OTP waveforms)
+## Background in one paragraph
 
-| 0x22 seq | kind | time | behavior |
-|----------|------|------|----------|
-| 0xF7 | 3-color full | 2261 ms | Drives both ways, FLASHES (8 inversions in 2.3 s), clears ghosting. Use rarely: startup, mode transitions, periodic cleanup. |
-| 0xC7 | 3-color display, no LUT reload | 1658 ms | No flashing, one smooth transition, drives both ways; black renders as patchy dark gray and ghosting accumulates. The workhorse. |
-| 0xFF | BW full | 422 ms | Drives only toward WHITE - cannot set black. |
-| 0xDC | BW fast partial window | 318 ms | Drives only toward WHITE - cannot set black. |
+The SSD1683 drives the glass with "waves": timed voltage sequences
+described by lookup tables (LUTs). A factory LUT set is baked into
+the chip ("OTP"); loading a custom one through register 0x32 is
+possible but out of scope here. Command `0x22` starts a wave, and its
+argument is not a wave number but a bitmask of stage bits:
 
-The last two rows explain every "weak partial refresh" failure on this
-panel: fast BW waves cannot drive black at all, so a classic fast
-partial refresh is impossible with the factory OTP LUTs. A custom LUT
-(register 0x32) might change this; it is deliberately left for a
-future experiment.
+```
+0x80 clock | 0x40 analog | 0x20 load temperature | 0x10 load LUT
+| 0x08 BW mode | 0x04 display | 0x02+0x01 disable
+```
 
-## The 0xC7 trap: it needs a reset + temperature cycle first
+The visible result depends on the stage bits, the loaded LUT and the
+color mode.
 
-0xC7 only runs smooth (no flashing, ~1.7 s) right after a hardware
-reset plus a temperature measurement cycle:
+## Measured update sequences (factory LUTs)
 
-1. `0x18 0x80` - select the internal temperature sensor;
-2. `0x22 0xB1`, `0x20` - load the temperature;
-3. `0x1A 0x64 0x00`, `0x22 0x91`, `0x20` - write it to the OTP
-   waveform temperature bucket;
-4. `0x3C 0x03` - border waveform.
+| 0x22 arg | what it does | time |
+|----------|--------------|------|
+| 0xF7 | Full update. Flashes (8 inversions in 2.3 s), drives both directions, clears ghosting. | 2261 ms |
+| 0xC7 | Smooth update. No flashing, drives both directions; black comes out as patchy dark gray and ghosting builds up. | 1658 ms |
+| 0xFF | Fast, but drives pixels only toward white. | 422 ms |
+| 0xDC | Fast partial-window mode, but also drives only toward white. | 318 ms |
 
-Without this, the controller falls back to a flashing full-like drive
-(2.26 s BUSY, whole-screen inversions measured frame by frame). The
-factory UI does reset+temp before every menu redraw. In this firmware
-see `prepWorkUpdate()` in `src/ssd1683_epd.cpp`.
+## Why there is no fast partial refresh
 
-Measured full path of one work update: reset+temp ~50 ms, frame
-compose ~90 ms, RAM upload ~540 ms, 0xC7 wave 1660 ms - about 2.35 s
-end to end.
+0xFF and 0xDC can push pixels toward white but cannot set or hold
+black. Any update that touches black content needs a full-panel wave,
+so this firmware redraws the whole screen on every update and uses
+0xC7 for regular frames.
 
-## The cold-start trap: temp_init before the first 0xF7
+## Trap 1: a cold-started panel fills solid black
 
-Without a temperature measurement cycle before the first full
-refresh, the controller latches an invalid temperature, degenerates
-the waveform and fills the screen SOLID BLACK. Always run temp_init
-on every cold start, before the first full update. After temp_init a
-clear gives white at any 0x1A value.
+Without a temperature measurement cycle before the first full update,
+the chip latches an invalid temperature, corrupts its waveform and
+fills the screen solid black. Run temp_init on every power-on, before
+the first full update:
 
-Register 0x1A (OTP temperature bucket) has no measurable effect on
-timing or density on this panel (swept 0x00..0x64).
+```
+0x18 0x80        select the internal temperature sensor
+0x22 0xB1, 0x20  load the temperature
+0x1A 0x64 0x00   write it to the waveform temperature bucket
+0x22 0x91, 0x20
+0x3C 0x03        border waveform
+```
 
-## Panel geometry facts the waves rely on
+After temp_init, clearing the screen gives white at any 0x1A value.
+The 0x1A value itself (temperature bucket) showed no measurable
+effect on timing or density (swept 0x00..0x64).
 
-- RAM bit polarity is inverted: bit 0 = black, bit 1 = white.
-- Cascade layout: a gate line is 100 bytes; visible X 0..395 goes to
-  the master controller, 396..791 to the slave (with an 8-column gap
-  in the logical address). See the "Panel quirks" section of the
-  README.
+## Trap 2: the smooth update only stays smooth right after reset + temp
+
+0xC7 without a hardware reset and a fresh temperature cycle degrades
+into a flashing full-like drive: 2.26 s BUSY with whole-screen
+inversions, caught on a photo series. The factory firmware runs
+reset+temp before every menu redraw; this firmware does the same in
+`prepWorkUpdate()` before every 0xC7.
+
+Measured cost of one smooth update, end to end: reset+temp ~50 ms,
+frame compose ~90 ms, RAM upload ~540 ms, wave 1660 ms - about
+2.35 s in total.

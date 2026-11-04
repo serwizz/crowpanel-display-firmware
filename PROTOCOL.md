@@ -74,10 +74,13 @@ value: accumulated step for the encoder, press duration in ms for long,
 
 ## Refresh policy
 
-The workhorse is partial refresh (FRAME_RECT over small areas). Full
-refresh (inversions) is rare: once per N updates, on entering NEUTRAL,
-or a long MENU press (the firmware triggers that by itself).
-FULL_REFRESH marks the next frame as full.
+Every update redraws the whole screen: the fast partial modes of this
+panel cannot drive black (see notes/waves.md), so FRAME_RECT only
+limits what is recomputed, not what is refreshed. Smooth updates (no
+flashing, ~1.7 s) carry regular frames. A full flashing refresh
+(~2.3 s) runs rarely: once per N updates (50 by default), on entering
+NEUTRAL, on a rectangle over half the screen, or on request - the
+FULL_REFRESH command or a long MENU press.
 
 ## Heartbeat and the privacy fail-safe
 
