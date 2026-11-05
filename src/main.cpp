@@ -38,6 +38,7 @@ static void send_pong(uint8_t seq);
 static bool set_mode(uint8_t m);
 static void draw_neutral_builtin(const char* why);
 static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t seq);
+static void send_error(uint8_t seq, uint8_t code);
 static uint32_t crc32_update(const uint8_t* data, size_t len, uint32_t c);
 
 // ---------- CRC32 (IEEE, same as zlib.crc32 on the host) ----------
@@ -63,7 +64,7 @@ static uint32_t crc32_calc(const uint8_t* data, size_t len) {
 
 // ---------- protocol: sending upstream ----------
 
-static uint8_t frame_buf[MAX_PAYLOAD];  // payload receive buffer (64 KB)
+static uint8_t frame_buf[FULL_FRAME_BYTES];  // payload buffer: a full frame is the largest command payload
 
 static uint8_t up_seq = 0;  // autonomous upstream frames counter
 static uint8_t next_seq() { return ++up_seq ? up_seq : ++up_seq; }
@@ -182,12 +183,13 @@ static void feed_text(uint8_t b) {
 // ---------- receive: binary frames ----------
 
 struct RxState {
-  enum Phase { SYNC1, SYNC2, CMD, SEQ, LEN1, LEN2, PAYLOAD, CRC1, CRC2, CRC3, CRC4 };
+  enum Phase { SYNC1, SYNC2, CMD, SEQ, LEN1, LEN2, PAYLOAD, CRC1, CRC2, CRC3, CRC4, SKIP };
   Phase phase = SYNC1;
   uint8_t cmd = 0;
   uint8_t seq = 0;
   uint16_t len = 0;
   uint16_t got = 0;
+  uint32_t skip = 0;  // bytes to discard after a length rejection
   uint8_t hdr[4];  // cmd + seq + len(2) - start of the frame body for CRC
   uint32_t crc_got = 0;
   uint32_t last_byte_ms = 0;  // receive timeout: a break mid-frame
@@ -218,7 +220,19 @@ static void feed_byte(uint8_t b) {
       rx.len = b; rx.hdr[2] = b; rx.phase = RxState::LEN2; return;
     case RxState::LEN2: {
       rx.len |= ((uint16_t)b) << 8; rx.hdr[3] = b;
-      if (rx.len > MAX_PAYLOAD) { rx.phase = RxState::SYNC1; return; }
+      // a full frame is the largest command payload; a longer claim
+      // means the peers disagree on the frame size - a configuration
+      // mismatch that must be visible, not silent. ERROR echoes the
+      // seq from an unverified header; that is harmless. The payload
+      // is not read: skip exactly len+4 bytes (payload and its CRC)
+      // so a magic-like sequence inside cannot spawn a phantom frame
+      // that swallows the next real one
+      if (rx.len > FULL_FRAME_BYTES) {
+        send_error(rx.seq, ERR_BAD_LENGTH);
+        rx.skip = (uint32_t)rx.len + 4;
+        rx.phase = RxState::SKIP;
+        return;
+      }
       rx.got = 0;
       // with len == 0 there is no payload phase at all - straight to CRC
       rx.phase = rx.len ? RxState::PAYLOAD : RxState::CRC1;
@@ -247,6 +261,9 @@ static void feed_byte(uint8_t b) {
       rx.phase = RxState::SYNC1;
       return;
     }
+    case RxState::SKIP:
+      if (--rx.skip == 0) rx.phase = RxState::SYNC1;
+      return;
     default:
       rx.phase = RxState::SYNC1;
   }

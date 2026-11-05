@@ -29,12 +29,17 @@ offset  size  field
 On a magic or CRC mismatch the receiver keeps scanning the stream for
 the next magic (resynchronization). A full frame is 26928 payload bytes
 plus 11 bytes of overhead and fits into a single frame; no chunking is
-needed. `len` is the payload length, 0..65535; 26928 (FRAME_FULL) is
-the largest payload the protocol ever carries. The receive buffer
-matches the 65535 maximum, so a parse-level overflow is impossible; a
-payload that buffers fine but does not match the command is rejected
-with ERROR BAD_LENGTH (below), and a mid-frame break longer than 500 ms
-resynchronizes the parser back to SYNC.
+needed. `len` is the payload length, 0..65535 on the wire; 26928 (FRAME_FULL)
+is the largest payload the protocol ever carries, and the receive
+buffer is exactly that size. A frame claiming more is rejected right at
+the length field with ERROR BAD_LENGTH: a length beyond the largest
+command means the peers disagree on the frame size (a configuration
+mismatch), and that must be visible, not silent. The parser does not
+read the payload: it skips exactly len+4 bytes (payload and its CRC),
+so a magic-like sequence inside cannot spawn a phantom frame that
+swallows the next real one. A well-sized payload that does not match
+the command is rejected with ERROR BAD_LENGTH (below); a mid-frame
+break longer than 500 ms resynchronizes the parser back to SYNC.
 
 ## Sequence numbers
 

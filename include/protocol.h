@@ -12,7 +12,6 @@ static const uint8_t FRAME_MAGIC[2] = {0xA7, 0x1C};
 static const uint16_t EPD_WIDTH = 272;
 static const uint16_t EPD_HEIGHT = 792;
 static const uint32_t FULL_FRAME_BYTES = (uint32_t)EPD_WIDTH * EPD_HEIGHT / 8;  // 26928
-static const uint16_t MAX_PAYLOAD = 0xFFFF;
 
 // host -> panel commands
 enum Cmd : uint8_t {
