@@ -11,6 +11,7 @@ static const uint8_t FRAME_MAGIC[2] = {0xA7, 0x1C};
 
 static const uint16_t EPD_WIDTH = 272;
 static const uint16_t EPD_HEIGHT = 792;
+static const uint8_t PROTO_STRIDE = EPD_WIDTH / 8;  // 34 protocol bytes per row
 static const uint32_t FULL_FRAME_BYTES = (uint32_t)EPD_WIDTH * EPD_HEIGHT / 8;  // 26928
 
 // host -> panel commands

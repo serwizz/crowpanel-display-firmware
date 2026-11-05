@@ -95,7 +95,6 @@ class Ssd1683Epd : public EpdDriver {
   static const uint16_t VISIBLE_W = 792;
   static const uint16_t SEAM = 396;
   static const uint32_t IMG_BYTES = (uint32_t)ROW_BYTES * GATE_LINES;  // 27200
-  static const uint8_t PROTO_STRIDE = 34;  // 272 / 8, protocol row bytes
 
   // last shown protocol frame + the cascade layout ready for a send
   uint8_t shadow_[PROTO_STRIDE * EPD_HEIGHT];

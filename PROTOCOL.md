@@ -86,7 +86,7 @@ before that has no base to apply to), 1 after.
 | 0x14 | FULL_REFRESH  | empty; draw the next frame with a full refresh                 |
 | 0x15 | SET_CONFIG    | key=value tuples (below); answered with CONFIG_VALUE           |
 | 0x16 | HELLO         | protocol version (u8); answered with READY                     |
-| 0x17 | TIME          | reserved (stage 6): hour, minute                               |
+| 0x17 | TIME          | hour, minute (u8 each); stores the clock, no ACK; in NEUTRAL redraws when the value changes |
 
 SET_CONFIG: repeating `key_len(1) key value_len(2 LE) value` tuples.
 The only known key so far is `hb_timeout`: the value is ASCII-decimal
@@ -215,6 +215,28 @@ screen lock, host reboots, an unplugged cable, a hung host process. A
 successfully drawn FRAME_FULL or FRAME_RECT switches the panel to
 DASHBOARD from any mode, including NEUTRAL: new content replaces the
 neutral screen.
+The neutral screen itself is a white field plus a large HH:MM centered,
+once the host has set the clock (TIME 0x17). The panel has no RTC: at
+a heartbeat timeout the clock freezes at the last accepted value, and
+the timeout neutral screen marks the staleness by hiding the colon
+(HH MM); a TIME received while NEUTRAL redraws the full HH:MM, so the
+clock ticks on the neutral screen as long as the host keeps sending.
+While the host is alive the staleness is bounded by the TIME period
+(a lost TIME is re-sent on the next minute tick); a dead host leaves
+the stale time on the glass indefinitely. The clock carries the
+host's local wall time: NTP steps and DST changes propagate with the
+next minute tick, the panel never validates timezones.
+Both TIME-in-NEUTRAL and SET_MODE(NEUTRAL) start a wave without an ACK
+to pace the host (they are state-only commands). A frame the host
+sends within ~3.5 s of such a command can be lost to the RX overflow
+(the 8 KB ring covers ~178 ms of traffic and the wave blocks the
+loop); a lost DRAW is detected via the missing FRAME_ACK and resent -
+that failure self-heals at the cost of one timeout. The state-only
+commands themselves are best-effort: the panel cannot detect their
+loss, so the host re-sends TIME on its period and can verify a mode
+change through the mode field of PONG. A host that draws right after
+setting the clock should wait for the wave (~3.5 s) or accept the
+resend.
 
 ## Text debug mode
 
@@ -223,7 +245,8 @@ Lines travel over the same port, terminated by `\n`:
 - to the panel: `ping` - answered with one text line, exactly:
   `[pong] uptime=<ms> ms mode=<0|1|2> shadow_crc=0x<8 lowercase hex>`;
   `mode <0|1|2>`, `refresh` - the same actions without binary encoding
-  (`mode 2` draws the neutral screen at once); `ackoff`/`ackon` -
+  (`mode 2` draws the neutral screen at once); `time HH:MM` - sets the
+  panel clock (same effect as the binary TIME); `ackoff`/`ackon` -
   suppress/re-enable FRAME_ACK (simulates a lost ACK to exercise the
   host fallback: PING with last_drawn_seq);
 - from the panel: firmware debug lines (`[epd]`, `[key]`, ... prefixes).

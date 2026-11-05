@@ -36,7 +36,7 @@ static const int PIN_ENC_CONF = 5;
 
 static void send_pong(uint8_t seq);
 static bool set_mode(uint8_t m);
-static void draw_neutral_builtin(const char* why);
+static void draw_neutral_builtin(const char* why, bool live);
 static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t seq);
 static void send_error(uint8_t seq, uint8_t code);
 static uint32_t crc32_update(const uint8_t* data, size_t len, uint32_t c);
@@ -109,6 +109,8 @@ static Ssd1683Epd epd;  // orientation defaults; flip flags after the marker che
 
 static uint8_t mode = MODE_SPLASH;
 static bool shadow_valid = false;  // true after the first FRAME_FULL (stage 4 semantics)
+static bool clock_known = false;   // stage 6: set by TIME; the panel has no RTC
+static uint8_t clock_h = 0, clock_m = 0;
 static uint32_t frames_since_full = 0;
 static const uint32_t FULL_REFRESH_EVERY = 50;  // full refresh once per N frames
 static const uint32_t RECT_FULL_THRESHOLD = (uint32_t)EPD_WIDTH * EPD_HEIGHT / 2;
@@ -133,7 +135,7 @@ static bool set_mode(uint8_t m) {
     // switching to NEUTRAL must replace the content right away: the
     // heartbeat timer only draws while mode != NEUTRAL, so without an
     // immediate draw the old content would stay on the glass for good
-    draw_neutral_builtin("host set NEUTRAL");
+    draw_neutral_builtin("host set NEUTRAL", true);
     return true;
   }
   mode = m;
@@ -154,6 +156,17 @@ static void handle_text_line(char* line) {
                    (unsigned long)crc32_calc(epd.shadow(), FULL_FRAME_BYTES));
   } else if (!strncmp(line, "mode ", 5)) {
     set_mode(atoi(line + 5));
+  } else if (!strncmp(line, "time ", 5)) {
+    int h = -1, m = -1;
+    char tail = 0;
+    // %c in the format catches trailing garbage: "23:45x" must not pass
+    if (sscanf(line + 5, "%d:%d%c", &h, &m, &tail) == 2 && h >= 0 && h < 24 && m >= 0 && m < 60) {
+      bool changed = !clock_known || clock_h != (uint8_t)h || clock_m != (uint8_t)m;
+      clock_h = (uint8_t)h; clock_m = (uint8_t)m; clock_known = true;
+      if (mode == MODE_NEUTRAL && changed) draw_neutral_builtin("time update", true);
+    } else {
+      Serial0.printf("[rx] bad time: %s\n", line + 5);
+    }
   } else if (!strcmp(line, "refresh")) {
     force_full_next = true;
     Serial0.printf("[epd] full refresh on next frame\n");
@@ -286,8 +299,8 @@ static void send_pong(uint8_t seq) {
 
 // READY v2: version + features (u16 LE) + shadow_valid
 static void send_ready(uint8_t seq) {
-  uint8_t p[4] = {PROTOCOL_VERSION, (uint8_t)((FTR_ACK | FTR_SHADOW_CRC) & 0xFF),
-                  (uint8_t)((FTR_ACK | FTR_SHADOW_CRC) >> 8), (uint8_t)shadow_valid};
+  uint8_t p[4] = {PROTOCOL_VERSION, (uint8_t)((FTR_ACK | FTR_SHADOW_CRC | FTR_TIME) & 0xFF),
+                  (uint8_t)((FTR_ACK | FTR_SHADOW_CRC | FTR_TIME) >> 8), (uint8_t)shadow_valid};
   send_up(CMD_READY, seq, p, 4);
 }
 
@@ -425,6 +438,18 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
       }
       return true;
     }
+    case CMD_TIME:
+      // stage 6: state-only, no ACK (like SET_MODE). The value is
+      // stored in any mode; in NEUTRAL it redraws so the clock ticks
+      // (skipped when the value did not change)
+      if (len != 2) { send_error(seq, ERR_BAD_LENGTH); return false; }
+      if (p[0] > 23 || p[1] > 59) { send_error(seq, ERR_BAD_VALUE); return false; }
+      {
+        bool changed = !clock_known || clock_h != p[0] || clock_m != p[1];
+        clock_h = p[0]; clock_m = p[1]; clock_known = true;
+        if (mode == MODE_NEUTRAL && changed) draw_neutral_builtin("time update", true);
+      }
+      return true;
     default:
       Serial0.printf("[rx] unknown command 0x%02x\n", cmd);
       send_error(seq, ERR_UNKNOWN_CMD);
@@ -434,13 +459,61 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
 
 // ---------- neutral screen (privacy fail-safe) ----------
 
-// Same intent as neutral_frame() on the host: a clock without personal
-// data. For now a plain white screen; text arrives together with the
-// driver (EPD_ShowString from the Elecrow library or a custom bitmap
-// font).
-static void draw_neutral_builtin(const char* why) {
+// Same intent as neutral_frame() on the host: no personal data. White
+// screen plus a big HH:MM once the host has set the clock (TIME); the
+// panel has no RTC, so at a heartbeat timeout the clock freezes at the
+// last accepted value (documented v2 limitation, PROTOCOL.md).
+
+// 3x5 font, one font pixel is an 8x8 block; rows top-down, bit 2 = left
+// column, 1 = ink. Index 10 is the colon.
+static const uint8_t GLYPH3X5[11][5] = {
+    {0x07, 0x05, 0x05, 0x05, 0x07},  // 0
+    {0x02, 0x06, 0x02, 0x02, 0x07},  // 1
+    {0x07, 0x01, 0x07, 0x04, 0x07},  // 2
+    {0x07, 0x01, 0x07, 0x01, 0x07},  // 3
+    {0x05, 0x05, 0x07, 0x01, 0x01},  // 4
+    {0x07, 0x04, 0x07, 0x01, 0x07},  // 5
+    {0x07, 0x04, 0x07, 0x05, 0x07},  // 6
+    {0x07, 0x01, 0x01, 0x02, 0x02},  // 7
+    {0x07, 0x05, 0x07, 0x05, 0x07},  // 8
+    {0x07, 0x05, 0x07, 0x01, 0x07},  // 9
+    {0x00, 0x02, 0x00, 0x02, 0x00},  // :
+};
+
+// x is a multiple of 8: every 8x8 block covers exactly one byte per row
+static void draw_glyph(uint8_t* buf, uint8_t n, int16_t x, int16_t y) {
+  if (n == 10) {  // colon: two 8x8 squares
+    for (uint8_t r = 0; r < 5; r++)
+      if (GLYPH3X5[10][r])
+        for (uint8_t dy = 0; dy < 8; dy++)
+          buf[(size_t)(y + r * 8 + dy) * PROTO_STRIDE + (x >> 3)] = 0xFF;
+    return;
+  }
+  for (uint8_t r = 0; r < 5; r++)
+    for (uint8_t c = 0; c < 3; c++)
+      if (GLYPH3X5[n][r] & (4 >> c))
+        for (uint8_t dy = 0; dy < 8; dy++)
+          buf[(size_t)(y + r * 8 + dy) * PROTO_STRIDE + ((x + c * 8) >> 3)] = 0xFF;
+}
+
+// live=false hides the colon: a heartbeat-timeout neutral screen shows
+// HH MM, marking the time as stale (the panel has no RTC and the host
+// went silent). A TIME update redraws with the colon.
+static void compose_clock(uint8_t* buf, bool live) {
+  const uint8_t glyphs[5] = {(uint8_t)(clock_h / 10), (uint8_t)(clock_h % 10), 10,
+                             (uint8_t)(clock_m / 10), (uint8_t)(clock_m % 10)};
+  int16_t x = 64;  // 4 digits of 24 + colon 8 + 4 gaps of 8 = 136, (272-136)/2 = 68 -> 64 keeps bytes aligned
+  for (uint8_t i = 0; i < 5; i++) {
+    if (glyphs[i] != 10 || live) draw_glyph(buf, glyphs[i], x, 376);  // (792-40)/2
+    x += (glyphs[i] == 10) ? 8 : 24;
+    x += 8;
+  }
+}
+
+static void draw_neutral_builtin(const char* why, bool live) {
   Serial0.printf("[fail-safe] %s - drawing neutral screen\n", why);
   memset(frame_buf, 0, FULL_FRAME_BYTES);  // 0 = white (protocol: 1 = black)
+  if (clock_known) compose_clock(frame_buf, live);
   epd.drawFull(frame_buf, true);           // neutral always drives full
   frames_since_full = 0;  // a neutral wave is a full wave: anchor the period
   mode = MODE_NEUTRAL;
@@ -542,7 +615,7 @@ void loop() {
   // the content; the timer is also reset after drawing, so it does not
   // fire every loop iteration
   if (millis() - last_host_frame_ms > hb_timeout_s * 1000UL) {
-    if (mode != MODE_NEUTRAL) draw_neutral_builtin("no heartbeat");
+    if (mode != MODE_NEUTRAL) draw_neutral_builtin("no heartbeat", false);
     last_host_frame_ms = millis();
   }
 
