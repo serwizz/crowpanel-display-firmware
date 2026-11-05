@@ -36,6 +36,7 @@ static const int PIN_ENC_CONF = 5;
 
 static void send_pong();
 static void set_mode(uint8_t m);
+static void draw_neutral_builtin(const char* why);
 static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len);
 static uint32_t crc32_update(const uint8_t* data, size_t len, uint32_t c);
 
@@ -115,10 +116,14 @@ static void set_mode(uint8_t m) {
     Serial0.printf("[rx] SET_MODE out of range: %u\n", (unsigned)m);
     return;
   }
-  mode = m;
   if (m == MODE_NEUTRAL) {
-    force_full_next = true;  // entering neutral also forces a full refresh
+    // switching to NEUTRAL must replace the content right away: the
+    // heartbeat timer only draws while mode != NEUTRAL, so without an
+    // immediate draw the old content would stay on the glass for good
+    draw_neutral_builtin("host set NEUTRAL");
+    return;
   }
+  mode = m;
 }
 
 // ---------- receive: text debug mode ----------
@@ -241,6 +246,7 @@ static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len) {
     case CMD_FRAME_FULL:
       if (len == FULL_FRAME_BYTES) {
         epd.drawFull(p, take_full_refresh());
+        mode = MODE_DASHBOARD;
       } else {
         Serial0.printf("[rx] FRAME_FULL wrong size: %u\n", (unsigned)len);
       }
@@ -257,9 +263,18 @@ static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len) {
           Serial0.printf("[rx] FRAME_RECT size %u != %u (stride*h)\n",
                          (unsigned)len, (unsigned)expect);
         } else {
-          // a rect over half the screen is worth a clean full refresh
-          bool full = (uint32_t)w * h >= RECT_FULL_THRESHOLD || take_full_refresh();
+          // a rect over half the screen is worth a clean full refresh; either way
+          // the full-refresh period is anchored to the last actually full wave
+          bool full;
+          if ((uint32_t)w * h >= RECT_FULL_THRESHOLD) {
+            frames_since_full = 0;
+            force_full_next = false;  // this wave is the full one
+            full = true;
+          } else {
+            full = take_full_refresh();
+          }
           epd.drawRect(x, y, w, h, p + 8, full);
+          mode = MODE_DASHBOARD;
         }
       }
       break;
@@ -283,10 +298,11 @@ static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len) {
 // data. For now a plain white screen; text arrives together with the
 // driver (EPD_ShowString from the Elecrow library or a custom bitmap
 // font).
-static void draw_neutral_builtin() {
-  Serial0.printf("[fail-safe] no heartbeat - drawing neutral screen\n");
+static void draw_neutral_builtin(const char* why) {
+  Serial0.printf("[fail-safe] %s - drawing neutral screen\n", why);
   memset(frame_buf, 0, FULL_FRAME_BYTES);  // 0 = white (protocol: 1 = black)
   epd.drawFull(frame_buf, true);           // neutral always drives full
+  frames_since_full = 0;  // a neutral wave is a full wave: anchor the period
   mode = MODE_NEUTRAL;
 }
 
@@ -388,7 +404,8 @@ static void poll_key_debug() {
 // ---------- setup / loop ----------
 
 void setup() {
-  Serial0.setRxBufferSize(8192);  // a full frame is 27 KB: the default 256 bytes is not enough
+  Serial0.setRxBufferSize(8192);  // a full frame is 27 KB: the default 256 bytes is not enough;
+                                  // while a wave runs (~2.3 s) the UART is not serviced - see the note in loop()
   Serial0.begin(SERIAL_BAUD);     // UART0 = CH340 bridge: protocol and logs in one stream
   crc32_init();
 
@@ -424,12 +441,13 @@ void loop() {
   // the content; the timer is also reset after drawing, so it does not
   // fire every loop iteration
   if (millis() - last_host_frame_ms > HB_TIMEOUT_S * 1000UL) {
-    if (mode != MODE_NEUTRAL) draw_neutral_builtin();
+    if (mode != MODE_NEUTRAL) draw_neutral_builtin("no heartbeat");
     last_host_frame_ms = millis();
   }
 
-  // no delay: a pause here cost lost bytes at 921600 (the buffer fills
-  // faster than a loop with delay(2) drains it); the polls are rate-
-  // limited by their own timers, everything is non-blocking
+  // no delay: a wave blocks the loop for ~2.3 s while the 8 KB RX ring
+  // keeps filling (it covers only ~178 ms of traffic at 460800), so any
+  // pause here costs bytes; the polls are rate-limited by their own
+  // timers, everything is non-blocking
   yield();
 }

@@ -2,7 +2,8 @@
 //
 // Factory model (validated on real hardware, see the bring-up sketch):
 // - two controllers share the SPI bus; the slave is addressed through
-//   the 0x91 0x04 prefix and registers 0xC4/0xC5/0xCE/0xCF/0xA4/0xA6;
+//   the 0x91 0x04 prefix and registers 0xC4/0xC5/0xCE/0xCF/0xA4 (old RAM
+//   0x26/0xA6 stays untouched: the factory model drives only the new RAM);
 // - a gate line is 100 bytes: bytes 0..49 are the master half, 50..99
 //   the slave half; visible X 0..395 maps to master, 396..791 to slave
 //   with a +8 column gap in the logical address space (X >= 396 -> +8);

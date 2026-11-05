@@ -37,7 +37,7 @@ needed.
 | 0x10 | FRAME_FULL    | 26928-byte bitmap, full frame                                  |
 | 0x11 | FRAME_RECT    | x,y,w,h (u16 LE) + rect bitmap, partial refresh                |
 | 0x12 | CLEAR         | 1 byte: 0 white, 1 black                                       |
-| 0x13 | SET_MODE      | 1 byte: 0 SPLASH, 1 DASHBOARD, 2 NEUTRAL                       |
+| 0x13 | SET_MODE      | 1 byte: 0 SPLASH, 1 DASHBOARD, 2 NEUTRAL (draws the neutral screen at once) |
 | 0x14 | FULL_REFRESH  | empty; draw the next frame with a full refresh                 |
 | 0x15 | SET_CONFIG    | key=value pairs (below), unused for now                        |
 
@@ -88,14 +88,16 @@ Firmware: when no valid frame (of any kind) arrives from the host for
 `HB_TIMEOUT` seconds (default 120, configurable), the panel draws a
 neutral screen by itself and switches to NEUTRAL mode. Host: sends PING
 every 30 s while idle. This covers screen lock, host reboots, an
-unplugged cable, a hung host process.
+unplugged cable, a hung host process. A successfully drawn FRAME_FULL or
+FRAME_RECT switches the panel to DASHBOARD from any mode, including
+NEUTRAL: new content replaces the neutral screen.
 
 ## Text debug mode
 
 Lines travel over the same port, terminated by `\n`:
 
 - to the panel: `ping`, `mode <0|1|2>`, `refresh` - the same actions
-  without binary encoding;
+  without binary encoding (`mode 2` draws the neutral screen at once);
 - from the panel: firmware debug lines (`[epd]`, `[key]`, ... prefixes)
   and the `pong <uptime_ms> <mode>` reply.
 
