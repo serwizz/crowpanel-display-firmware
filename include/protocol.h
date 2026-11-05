@@ -34,6 +34,7 @@ enum CmdUp : uint8_t {
   CMD_READY = 0x81,
   CMD_ERROR = 0x82,
   CMD_FRAME_ACK = 0x83,
+  CMD_CONFIG_VALUE = 0x84,  // applied value, answers SET_CONFIG (stage 5)
 };
 
 // ERROR codes; payload is seq(u8, of the rejected frame) + code(u8)
@@ -69,3 +70,6 @@ enum KeyEvent : uint8_t { EV_DOWN = 0, EV_UP = 1, EV_SHORT = 2, EV_LONG = 3 };
 // seconds the panel draws a neutral screen by itself (privacy must not
 // depend on the host being alive).
 static const uint32_t HB_TIMEOUT_S = 120;
+// SET_CONFIG clamps hb_timeout into this range; 0 is rejected outright
+static const uint32_t HB_TIMEOUT_MIN_S = 30;
+static const uint32_t HB_TIMEOUT_MAX_S = 3600;

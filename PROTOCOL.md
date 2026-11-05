@@ -72,13 +72,18 @@ before that has no base to apply to), 1 after.
 | 0x12 | CLEAR         | 1 byte: 0 white, 1 black                                       |
 | 0x13 | SET_MODE      | 1 byte: 0 SPLASH, 1 DASHBOARD, 2 NEUTRAL (draws the neutral screen at once) |
 | 0x14 | FULL_REFRESH  | empty; draw the next frame with a full refresh                 |
-| 0x15 | SET_CONFIG    | key=value pairs (below), unused for now                        |
+| 0x15 | SET_CONFIG    | key=value tuples (below); answered with CONFIG_VALUE           |
 | 0x16 | HELLO         | protocol version (u8); answered with READY                     |
 | 0x17 | TIME          | reserved (stage 6): hour, minute                               |
 
-SET_CONFIG (reserved for a Wi-Fi evolution): repeating
-`key_len(1) key value_len(2 LE) value` tuples. Known keys:
-`hb_timeout`, `refresh_interval`, `rotate`.
+SET_CONFIG: repeating `key_len(1) key value_len(2 LE) value` tuples.
+The only known key so far is `hb_timeout`: the value is ASCII-decimal
+seconds for the heartbeat fail-safe timeout. Rules: 0, non-numbers and
+u32 overflows are rejected with ERROR BAD_VALUE and leave the previous
+value unchanged; 1..29 clamp to 30; above 3600 clamps to 3600; anything
+else applies as-is. A successful tuple is answered with CONFIG_VALUE
+carrying the applied u32 (observability: the host sees the clamp).
+Unknown keys are rejected with ERROR BAD_VALUE.
 
 ## Panel -> host commands
 
@@ -88,6 +93,7 @@ SET_CONFIG (reserved for a Wi-Fi evolution): repeating
 | 0x81 | READY      | protocol_version (u8) + features (u16 LE) + shadow_valid (u8); at startup and on HELLO |
 | 0x82 | ERROR      | seq of the rejected frame (u8) + code (u8)                         |
 | 0x83 | FRAME_ACK  | seq of the drawn frame (u8; the same byte as the payload); sent after a FRAME_FULL/FRAME_RECT/CLEAR wave completes (SET_MODE draws too but is state-only - no ACK) |
+| 0x84 | CONFIG_VALUE | applied value (u32 LE); answers a successful SET_CONFIG tuple |
 | 0x80 | KEY_EVENT  | key (u8) + event (u8) + value (i16 LE)                             |
 
 The panel answers a binary frame it cannot execute with exactly one
@@ -175,8 +181,9 @@ FULL_REFRESH command or a long MENU press.
 ## Heartbeat and the privacy fail-safe
 
 Firmware: when no accepted frame arrives from the host for
-`HB_TIMEOUT` seconds (default 120, configurable), the panel draws a
-neutral screen by itself and switches to NEUTRAL mode. Only frames the
+`hb_timeout` seconds (default 120; SET_CONFIG clamps the key to
+30..3600), the panel draws a neutral screen by itself and switches to
+NEUTRAL mode. Only frames the
 panel accepts reset the timer; rejected frames (the ERROR answers) do
 not - a host that keeps sending garbage must not hold the panel off its
 privacy fail-safe. Host: sends PING every 30 s while idle. This covers

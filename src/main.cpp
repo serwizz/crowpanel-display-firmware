@@ -197,6 +197,7 @@ static const uint32_t RX_FRAME_TIMEOUT_MS = 500;
 
 static RxState rx;
 static uint32_t last_host_frame_ms = 0;  // heartbeat fail-safe
+static uint32_t hb_timeout_s = HB_TIMEOUT_S;  // SET_CONFIG clamps it to HB_TIMEOUT_MIN_S..MAX_S
 
 static void feed_byte(uint8_t b) {
   rx.last_byte_ms = millis();
@@ -362,6 +363,47 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
       if (len != 0) { send_error(seq, ERR_BAD_LENGTH); return false; }
       force_full_next = true;
       return true;
+    case CMD_SET_CONFIG: {
+      // tuples: key_len(1) key value_len(2 LE) value. Known keys:
+      // hb_timeout (ASCII-decimal seconds, clamped to HB_TIMEOUT_MIN_S..
+      // HB_TIMEOUT_MAX_S; 0, non-numbers and overflows are rejected and
+      // leave the previous value). Each successful tuple is answered
+      // with CONFIG_VALUE carrying the applied u32.
+      if (len == 0) { send_error(seq, ERR_BAD_LENGTH); return false; }
+      uint16_t pos = 0;
+      while (pos < len) {
+        uint8_t klen = p[pos++];
+        if (len - pos < (uint16_t)klen + 2) { send_error(seq, ERR_BAD_LENGTH); return false; }
+        const uint8_t* key = p + pos;
+        pos += klen;
+        uint16_t vlen = p[pos] | ((uint16_t)p[pos + 1] << 8);
+        pos += 2;
+        if (len - pos < vlen) { send_error(seq, ERR_BAD_LENGTH); return false; }
+        const uint8_t* val = p + pos;
+        pos += vlen;
+        if (klen != 10 || memcmp(key, "hb_timeout", 10) != 0) {
+          Serial0.printf("[rx] SET_CONFIG unknown key (%u bytes)\n", (unsigned)klen);
+          send_error(seq, ERR_BAD_VALUE);
+          return false;
+        }
+        if (vlen == 0 || vlen > 10) { send_error(seq, ERR_BAD_VALUE); return false; }
+        uint32_t v = 0;
+        bool bad = false;
+        for (uint16_t i = 0; i < vlen && !bad; i++) {
+          if (val[i] < '0' || val[i] > '9') { bad = true; break; }
+          uint32_t d = val[i] - '0';
+          if (v > (UINT32_MAX - d) / 10) { bad = true; break; }  // u32 overflow
+          v = v * 10 + d;
+        }
+        if (bad || v == 0) { send_error(seq, ERR_BAD_VALUE); return false; }
+        if (v < HB_TIMEOUT_MIN_S) v = HB_TIMEOUT_MIN_S;
+        if (v > HB_TIMEOUT_MAX_S) v = HB_TIMEOUT_MAX_S;
+        hb_timeout_s = v;
+        uint8_t resp[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
+        send_up(CMD_CONFIG_VALUE, seq, resp, 4);
+      }
+      return true;
+    }
     default:
       Serial0.printf("[rx] unknown command 0x%02x\n", cmd);
       send_error(seq, ERR_UNKNOWN_CMD);
@@ -515,10 +557,11 @@ void loop() {
   poll_encoder();
   poll_key_debug();
 
-  // fail-safe: the host has been silent longer than HB_TIMEOUT_S - hide
+  // fail-safe: the host has been silent longer than hb_timeout_s (default
+  // HB_TIMEOUT_S, SET_CONFIG clamps it to HB_TIMEOUT_MIN_S..MAX_S) - hide
   // the content; the timer is also reset after drawing, so it does not
   // fire every loop iteration
-  if (millis() - last_host_frame_ms > HB_TIMEOUT_S * 1000UL) {
+  if (millis() - last_host_frame_ms > hb_timeout_s * 1000UL) {
     if (mode != MODE_NEUTRAL) draw_neutral_builtin("no heartbeat");
     last_host_frame_ms = millis();
   }
