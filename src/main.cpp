@@ -101,6 +101,7 @@ static Ssd1683Epd epd;  // orientation defaults; flip flags after the marker che
 // cleans up ghosting but flashes the panel.
 
 static uint8_t mode = MODE_SPLASH;
+static bool shadow_valid = false;  // true after the first FRAME_FULL (stage 4 semantics)
 static uint32_t frames_since_full = 0;
 static const uint32_t FULL_REFRESH_EVERY = 50;  // full refresh once per N frames
 static const uint32_t RECT_FULL_THRESHOLD = (uint32_t)EPD_WIDTH * EPD_HEIGHT / 2;
@@ -248,9 +249,9 @@ static void send_pong(uint8_t seq) {
 
 // READY v2: version + features (u16 LE) + shadow_valid; features stay 0
 // until their stages land (ACK - stage 3, shadow CRC - stage 4, TIME -
-// stage 6), shadow_valid stays 1 until stage 4
+// stage 6)
 static void send_ready(uint8_t seq) {
-  uint8_t p[4] = {PROTOCOL_VERSION, 0, 0, 1};  // features = 0 until stages 3-6
+  uint8_t p[4] = {PROTOCOL_VERSION, 0, 0, (uint8_t)shadow_valid};
   send_up(CMD_READY, seq, p, 4);
 }
 
@@ -265,6 +266,7 @@ static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
     case CMD_FRAME_FULL:
       if (len == FULL_FRAME_BYTES) {
         epd.drawFull(p, take_full_refresh());
+        shadow_valid = true;  // the host shadow can now be trusted
         mode = MODE_DASHBOARD;
       } else {
         Serial0.printf("[rx] FRAME_FULL wrong size: %u\n", (unsigned)len);
@@ -438,8 +440,7 @@ void setup() {
   mode = MODE_SPLASH;
   last_host_frame_ms = millis();
 
-  uint8_t ready[4] = {PROTOCOL_VERSION, 0, 0, 1};  // features = 0 until stages 3-6
-  send_up(CMD_READY, next_seq(), ready, 4);
+  send_ready(next_seq());  // boot READY: shadow_valid = 0, no FRAME_FULL yet
 }
 
 void loop() {

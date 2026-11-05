@@ -37,18 +37,21 @@ seq is present in every binary frame of both sides. The host counts its
 outgoing frames from 1, skipping 0 on an 8-bit overflow. A response
 (PONG, READY, later ERROR/FRAME_ACK/CONFIG_VALUE) echoes the seq of the
 request it answers. Autonomous panel frames (the boot READY, KEY_EVENT)
-use the panel-side counter. Text-mode commands are outside the
-numbering and go out with seq = 0.
+use the panel-side counter. Text-mode lines are not frames and carry no
+seq at all; the binary PONG that answers a text `ping` goes out with
+seq = 0.
 
 ## Handshake
 
 After opening the port the host sends `HELLO` with its protocol version;
 the panel answers `READY` (the same payload as the boot READY). The
-panel also sends `READY` by itself right after firmware startup. The
-host requires the versions to match exactly and fails with a clear
-error otherwise (`protocol version mismatch: host 2, panel N`): both
-sides ship together, so a version gap means a broken setup, not a
-feature negotiation.
+panel also sends `READY` by itself right after firmware startup. Any
+READY frame within the handshake window completes the handshake - the
+echo to HELLO or an autonomous boot READY. The host requires the
+versions to match exactly and fails with a clear error otherwise
+(`protocol version mismatch: host 2, panel N`): both sides ship
+together, so a version gap means a broken setup, not a feature
+negotiation.
 
 `features` is a capability bitmap: 0x0001 ACK (FRAME_ACK pacing), 0x0002
 SHADOW_CRC (shadow CRC32 in PONG), 0x0004 TIME (clock on the neutral
@@ -135,6 +138,11 @@ ambiguity.
 
 ## Sizes and timings (reference)
 
-A full frame over UART at 460800 takes about 0.6 s. A partial refresh
-of the panel takes 0.5-1 s, a full refresh several seconds. A complete
-button -> host -> frame round trip is 1-2 s.
+A full frame over UART at 460800 takes about 0.6 s. A smooth update runs
+~2.35 s end to end (reset + temperature ~50 ms, compose ~90 ms, RAM
+upload ~540 ms, wave ~1660 ms); a full flashing refresh replaces the
+wave with a ~2260 ms one. While a wave runs the firmware does not
+service the UART, and the 8 KB RX ring covers only ~178 ms of traffic,
+so until FRAME_ACK pacing is negotiated through `features` the host must
+not stream frames back to back: wait for the previous update to land
+(a PING round trip is a safe spacer) or bytes are lost to "bad CRC".
