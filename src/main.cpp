@@ -108,8 +108,8 @@ static Ssd1683Epd epd;  // orientation defaults; flip flags after the marker che
 // cleans up ghosting but flashes the panel.
 
 static uint8_t mode = MODE_SPLASH;
-static bool shadow_valid = false;  // true after the first FRAME_FULL (stage 4 semantics)
-static bool clock_known = false;   // stage 6: set by TIME; the panel has no RTC
+static bool shadow_valid = false;  // true after the first FRAME_FULL after startup
+static bool clock_known = false;   // set by TIME; the panel has no RTC
 static bool clock_stale = false;   // drawn by the heartbeat timeout (colon hidden)
 static uint8_t clock_h = 0, clock_m = 0;
 static uint32_t frames_since_full = 0;
@@ -441,7 +441,7 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
       return true;
     }
     case CMD_TIME:
-      // stage 6: state-only, no ACK (like SET_MODE). The value is
+      // state-only, no ACK (like SET_MODE). The value is
       // stored in any mode; in NEUTRAL it redraws so the clock ticks
       // (skipped when the value did not change)
       if (len != 2) { send_error(seq, ERR_BAD_LENGTH); return false; }

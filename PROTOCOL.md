@@ -126,13 +126,18 @@ resynchronizes on the next magic. ERROR frames are written to the TX
 buffer synchronously: a host that stops reading stalls the panel, the
 watchdog resets it and the panel reboots into the startup state.
 
+KEY_EVENT payload fields: key 1 MENU, 2 EXIT, 3 ENC_UP, 4 ENC_DOWN,
+5 ENC_CONF; event 0 down, 1 up, 2 short (click), 3 long; value is the
+accumulated step for the encoder and the press duration in ms for
+long, 0 otherwise.
+
 | code | name            | when                                                          |
 |------|-----------------|---------------------------------------------------------------|
 | 0    | -               | reserved, never sent                                          |
 | 1    | UNKNOWN_CMD     | cmd is not a known command                                    |
 | 2    | BAD_LENGTH      | payload length does not match the command                     |
 | 3    | OUT_OF_BOUNDS   | FRAME_RECT outside the 272x792 screen                         |
-| 4    | BAD_VALUE       | SET_MODE outside 0..2                                         |
+| 4    | BAD_VALUE       | value outside range: SET_MODE, TIME, SET_CONFIG (unknown key too) |
 | 5    | SHADOW_INVALID  | FRAME_RECT before the first FRAME_FULL (no shadow base)       |
 
 ## Shadow consistency
@@ -175,11 +180,6 @@ Text-mode garbage and unrecognized text lines get no ERROR: the text
 mode has no seq and its stray lines are legitimate resynchronization.
 Text commands report a rejected argument as a debug line (`[rx] ...`)
 on the same port - ERROR frames are binary-only.
-
-key: 1 MENU, 2 EXIT, 3 ENC_UP, 4 ENC_DOWN, 5 ENC_CONF.
-event: 0 down, 1 up, 2 short (click), 3 long.
-value: accumulated step for the encoder, press duration in ms for long,
-0 otherwise.
 
 ## Bitmap
 

@@ -24,7 +24,7 @@ enum Cmd : uint8_t {
   CMD_FULL_REFRESH = 0x14,
   CMD_SET_CONFIG = 0x15,
   CMD_HELLO = 0x16,
-  CMD_TIME = 0x17,  // stage 6, reserved
+  CMD_TIME = 0x17,  // hour, minute; sets the panel clock
 };
 
 // panel -> host commands
@@ -34,7 +34,7 @@ enum CmdUp : uint8_t {
   CMD_READY = 0x81,
   CMD_ERROR = 0x82,
   CMD_FRAME_ACK = 0x83,
-  CMD_CONFIG_VALUE = 0x84,  // applied value, answers SET_CONFIG (stage 5)
+  CMD_CONFIG_VALUE = 0x84,  // applied value, answers SET_CONFIG
 };
 
 // ERROR codes; payload is seq(u8, of the rejected frame) + code(u8)
@@ -48,9 +48,9 @@ enum Err : uint8_t {
 
 // READY capabilities bitmap (features field, u16 LE). A host requires
 // the exact PROTOCOL_VERSION match; features only gate optional behavior.
-static const uint16_t FTR_ACK = 0x0001;         // FRAME_ACK pacing (stage 3)
-static const uint16_t FTR_SHADOW_CRC = 0x0002;  // shadow CRC in PONG (stage 4)
-static const uint16_t FTR_TIME = 0x0004;        // TIME command and clock (stage 6)
+static const uint16_t FTR_ACK = 0x0001;         // FRAME_ACK pacing
+static const uint16_t FTR_SHADOW_CRC = 0x0002;  // shadow CRC in PONG
+static const uint16_t FTR_TIME = 0x0004;        // TIME command and clock
 static const uint16_t FTR_RLE = 0x0008;         // RLE-compressed frames (reserved)
 
 enum Mode : uint8_t { MODE_SPLASH = 0, MODE_DASHBOARD = 1, MODE_NEUTRAL = 2 };
