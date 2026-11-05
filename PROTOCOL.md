@@ -83,7 +83,33 @@ SET_CONFIG (reserved for a Wi-Fi evolution): repeating
 |------|------------|--------------------------------------------------------------------|
 | 0x02 | PONG       | uptime_ms (u32 LE) + mode (u8)                                     |
 | 0x81 | READY      | protocol_version (u8) + features (u16 LE) + shadow_valid (u8); at startup and on HELLO |
+| 0x82 | ERROR      | seq of the rejected frame (u8) + code (u8)                         |
 | 0x80 | KEY_EVENT  | key (u8) + event (u8) + value (i16 LE)                             |
+
+The panel answers a binary frame it cannot execute with exactly one
+ERROR. A response frame (PONG, READY, ERROR) always carries the seq of
+the request it answers - in the header and in the payload; only
+autonomous frames (boot READY, KEY_EVENT) use the panel-side counter,
+so (cmd, seq) uniquely identifies a response. Frames failing the magic
+or the CRC32 are dropped silently at the parse level and never get an
+ERROR: with a corrupted body the seq cannot be trusted. The receiver
+resynchronizes on the next magic. ERROR frames are written to the TX
+buffer synchronously: a host that stops reading stalls the panel, the
+watchdog resets it and the panel reboots into the startup state.
+
+| code | name            | when                                                          |
+|------|-----------------|---------------------------------------------------------------|
+| 0    | -               | reserved, never sent                                          |
+| 1    | UNKNOWN_CMD     | cmd is not a known command                                    |
+| 2    | BAD_LENGTH      | payload length does not match the command                     |
+| 3    | OUT_OF_BOUNDS   | FRAME_RECT outside the 272x792 screen                         |
+| 4    | BAD_VALUE       | SET_MODE outside 0..2                                         |
+| 5    | SHADOW_INVALID  | FRAME_RECT before the first FRAME_FULL (no shadow base)       |
+
+Text-mode garbage and unrecognized text lines get no ERROR: the text
+mode has no seq and its stray lines are legitimate resynchronization.
+Text commands report a rejected argument as a debug line (`[rx] ...`)
+on the same port - ERROR frames are binary-only.
 
 key: 1 MENU, 2 EXIT, 3 ENC_UP, 4 ENC_DOWN, 5 ENC_CONF.
 event: 0 down, 1 up, 2 short (click), 3 long.
@@ -116,13 +142,16 @@ FULL_REFRESH command or a long MENU press.
 
 ## Heartbeat and the privacy fail-safe
 
-Firmware: when no valid frame (of any kind) arrives from the host for
+Firmware: when no accepted frame arrives from the host for
 `HB_TIMEOUT` seconds (default 120, configurable), the panel draws a
-neutral screen by itself and switches to NEUTRAL mode. Host: sends PING
-every 30 s while idle. This covers screen lock, host reboots, an
-unplugged cable, a hung host process. A successfully drawn FRAME_FULL or
-FRAME_RECT switches the panel to DASHBOARD from any mode, including
-NEUTRAL: new content replaces the neutral screen.
+neutral screen by itself and switches to NEUTRAL mode. Only frames the
+panel accepts reset the timer; rejected frames (the ERROR answers) do
+not - a host that keeps sending garbage must not hold the panel off its
+privacy fail-safe. Host: sends PING every 30 s while idle. This covers
+screen lock, host reboots, an unplugged cable, a hung host process. A
+successfully drawn FRAME_FULL or FRAME_RECT switches the panel to
+DASHBOARD from any mode, including NEUTRAL: new content replaces the
+neutral screen.
 
 ## Text debug mode
 

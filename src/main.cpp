@@ -35,9 +35,9 @@ static const int PIN_ENC_CONF = 5;
 // ---------- forward declarations ----------
 
 static void send_pong(uint8_t seq);
-static void set_mode(uint8_t m);
+static bool set_mode(uint8_t m);
 static void draw_neutral_builtin(const char* why);
-static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t seq);
+static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t seq);
 static uint32_t crc32_update(const uint8_t* data, size_t len, uint32_t c);
 
 // ---------- CRC32 (IEEE, same as zlib.crc32 on the host) ----------
@@ -117,19 +117,20 @@ static bool take_full_refresh() {
   return false;
 }
 
-static void set_mode(uint8_t m) {
+static bool set_mode(uint8_t m) {
   if (m > MODE_NEUTRAL) {
     Serial0.printf("[rx] SET_MODE out of range: %u\n", (unsigned)m);
-    return;
+    return false;
   }
   if (m == MODE_NEUTRAL) {
     // switching to NEUTRAL must replace the content right away: the
     // heartbeat timer only draws while mode != NEUTRAL, so without an
     // immediate draw the old content would stay on the glass for good
     draw_neutral_builtin("host set NEUTRAL");
-    return;
+    return true;
   }
   mode = m;
+  return true;
 }
 
 // ---------- receive: text debug mode ----------
@@ -225,8 +226,8 @@ static void feed_byte(uint8_t b) {
       if (rx.got) crc = crc32_update(frame_buf, rx.got, crc);
       crc ^= 0xFFFFFFFFu;
       if (crc == rx.crc_got) {
-        handle_frame(rx.cmd, frame_buf, rx.len, rx.seq);
-        last_host_frame_ms = millis();
+        if (handle_frame(rx.cmd, frame_buf, rx.len, rx.seq))
+          last_host_frame_ms = millis();  // accepted frames only
       } else {
         Serial0.printf("[rx] bad CRC, frame dropped\n");
       }
@@ -255,61 +256,90 @@ static void send_ready(uint8_t seq) {
   send_up(CMD_READY, seq, p, 4);
 }
 
-static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t seq) {
+// one ERROR per rejected binary frame; the text mode gets none (it has
+// no seq and its garbage lines are legitimate resynchronization)
+static void send_error(uint8_t seq, uint8_t code) {
+  uint8_t p[2] = {seq, code};
+  send_up(CMD_ERROR, seq, p, 2);
+}
+
+// returns true when the frame was accepted; only accepted frames feed
+// the heartbeat fail-safe - a host spamming rejected frames must not
+// hold the panel off its privacy neutral screen
+static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t seq) {
   switch (cmd) {
     case CMD_PING:
+      if (len != 0) { send_error(seq, ERR_BAD_LENGTH); return false; }
       send_pong(seq);
-      break;
+      return true;
     case CMD_HELLO:
+      if (len != 1) { send_error(seq, ERR_BAD_LENGTH); return false; }
       send_ready(seq);
-      break;
+      return true;
     case CMD_FRAME_FULL:
-      if (len == FULL_FRAME_BYTES) {
-        epd.drawFull(p, take_full_refresh());
-        shadow_valid = true;  // the host shadow can now be trusted
-        mode = MODE_DASHBOARD;
-      } else {
+      if (len != FULL_FRAME_BYTES) {
         Serial0.printf("[rx] FRAME_FULL wrong size: %u\n", (unsigned)len);
+        send_error(seq, ERR_BAD_LENGTH);
+        return false;
       }
-      break;
+      epd.drawFull(p, take_full_refresh());
+      shadow_valid = true;  // the host shadow can now be trusted
+      mode = MODE_DASHBOARD;
+      return true;
     case CMD_FRAME_RECT:
-      if (len >= 8) {
+      if (len < 8) { send_error(seq, ERR_BAD_LENGTH); return false; }
+      if (!shadow_valid) {
+        // no FRAME_FULL since boot yet: there is no shadow base to
+        // apply the rect to (host must send a full frame first)
+        send_error(seq, ERR_SHADOW_INVALID);
+        return false;
+      }
+      {
         uint16_t x = p[0] | (p[1] << 8), y = p[2] | (p[3] << 8);
         uint16_t w = p[4] | (p[5] << 8), h = p[6] | (p[7] << 8);
         uint32_t expect = 8 + (uint32_t)((w + 7) / 8) * h;
         if (w == 0 || h == 0 || x + w > EPD_WIDTH || y + h > EPD_HEIGHT) {
           Serial0.printf("[rx] FRAME_RECT out of bounds: %u,%u %ux%u\n",
                          (unsigned)x, (unsigned)y, (unsigned)w, (unsigned)h);
-        } else if (len != expect) {
+          send_error(seq, ERR_OUT_OF_BOUNDS);
+          return false;
+        }
+        if (len != expect) {
           Serial0.printf("[rx] FRAME_RECT size %u != %u (stride*h)\n",
                          (unsigned)len, (unsigned)expect);
-        } else {
-          // a rect over half the screen is worth a clean full refresh; either way
-          // the full-refresh period is anchored to the last actually full wave
-          bool full;
-          if ((uint32_t)w * h >= RECT_FULL_THRESHOLD) {
-            frames_since_full = 0;
-            force_full_next = false;  // this wave is the full one
-            full = true;
-          } else {
-            full = take_full_refresh();
-          }
-          epd.drawRect(x, y, w, h, p + 8, full);
-          mode = MODE_DASHBOARD;
+          send_error(seq, ERR_BAD_LENGTH);
+          return false;
         }
+        // a rect over half the screen is worth a clean full refresh; either way
+        // the full-refresh period is anchored to the last actually full wave
+        bool full;
+        if ((uint32_t)w * h >= RECT_FULL_THRESHOLD) {
+          frames_since_full = 0;
+          force_full_next = false;  // this wave is the full one
+          full = true;
+        } else {
+          full = take_full_refresh();
+        }
+        epd.drawRect(x, y, w, h, p + 8, full);
+        mode = MODE_DASHBOARD;
+        return true;
       }
-      break;
     case CMD_CLEAR:
-      if (len >= 1) epd.clear(p[0]);
-      break;
+      if (len != 1) { send_error(seq, ERR_BAD_LENGTH); return false; }
+      epd.clear(p[0]);
+      return true;
     case CMD_SET_MODE:
-      if (len >= 1) set_mode(p[0]);
-      break;
+      if (len != 1) { send_error(seq, ERR_BAD_LENGTH); return false; }
+      if (!set_mode(p[0])) { send_error(seq, ERR_BAD_VALUE); return false; }
+      return true;
     case CMD_FULL_REFRESH:
+      if (len != 0) { send_error(seq, ERR_BAD_LENGTH); return false; }
       force_full_next = true;
-      break;
+      return true;
     default:
       Serial0.printf("[rx] unknown command 0x%02x\n", cmd);
+      send_error(seq, ERR_UNKNOWN_CMD);
+      return false;
   }
 }
 

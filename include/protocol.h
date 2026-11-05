@@ -32,6 +32,16 @@ enum CmdUp : uint8_t {
   CMD_PONG = 0x02,
   CMD_KEY_EVENT = 0x80,
   CMD_READY = 0x81,
+  CMD_ERROR = 0x82,
+};
+
+// ERROR codes; payload is seq(u8, of the rejected frame) + code(u8)
+enum Err : uint8_t {
+  ERR_UNKNOWN_CMD = 1,
+  ERR_BAD_LENGTH = 2,
+  ERR_OUT_OF_BOUNDS = 3,
+  ERR_BAD_VALUE = 4,
+  ERR_SHADOW_INVALID = 5,  // FRAME_RECT before the first FRAME_FULL after startup
 };
 
 // READY capabilities bitmap (features field, u16 LE). A host requires
