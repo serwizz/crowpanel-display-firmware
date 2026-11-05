@@ -33,6 +33,7 @@ enum CmdUp : uint8_t {
   CMD_KEY_EVENT = 0x80,
   CMD_READY = 0x81,
   CMD_ERROR = 0x82,
+  CMD_FRAME_ACK = 0x83,
 };
 
 // ERROR codes; payload is seq(u8, of the rejected frame) + code(u8)

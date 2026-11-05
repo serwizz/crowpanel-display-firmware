@@ -68,6 +68,12 @@ static uint8_t frame_buf[MAX_PAYLOAD];  // payload receive buffer (64 KB)
 static uint8_t up_seq = 0;  // autonomous upstream frames counter
 static uint8_t next_seq() { return ++up_seq ? up_seq : ++up_seq; }
 
+// FRAME_ACK pacing state: the host waits for FRAME_ACK(seq) before the
+// next frame; ack_enabled exists so the text debug can simulate a lost
+// ACK ("ackoff"/"ackon") and exercise the host fallback
+static bool ack_enabled = true;
+static uint8_t last_drawn_seq = 0;  // echoed in PONG for the lost-ACK fallback
+
 // seq: responses to a request echo its seq; autonomous frames (boot
 // READY, KEY_EVENT) take the next value of the panel-side counter
 static void send_up(uint8_t cmd, uint8_t seq, const uint8_t* payload, uint16_t len) {
@@ -146,6 +152,12 @@ static void handle_text_line(char* line) {
   } else if (!strcmp(line, "refresh")) {
     force_full_next = true;
     Serial0.printf("[epd] full refresh on next frame\n");
+  } else if (!strcmp(line, "ackoff")) {
+    ack_enabled = false;
+    Serial0.printf("[epd] FRAME_ACK suppressed (ackoff)\n");
+  } else if (!strcmp(line, "ackon")) {
+    ack_enabled = true;
+    Serial0.printf("[epd] FRAME_ACK enabled (ackon)\n");
   }
   // unrecognized lines are ignored (may be resynchronization garbage)
 }
@@ -243,17 +255,23 @@ static void feed_byte(uint8_t b) {
 
 static void send_pong(uint8_t seq) {
   uint32_t up = millis();
-  uint8_t p[5] = {(uint8_t)up, (uint8_t)(up >> 8), (uint8_t)(up >> 16),
-                  (uint8_t)(up >> 24), mode};
-  send_up(CMD_PONG, seq, p, 5);
+  uint8_t p[6] = {(uint8_t)up, (uint8_t)(up >> 8), (uint8_t)(up >> 16),
+                  (uint8_t)(up >> 24), mode, last_drawn_seq};
+  send_up(CMD_PONG, seq, p, 6);
 }
 
-// READY v2: version + features (u16 LE) + shadow_valid; features stay 0
-// until their stages land (ACK - stage 3, shadow CRC - stage 4, TIME -
-// stage 6)
+// READY v2: version + features (u16 LE) + shadow_valid
 static void send_ready(uint8_t seq) {
-  uint8_t p[4] = {PROTOCOL_VERSION, 0, 0, (uint8_t)shadow_valid};
+  uint8_t p[4] = {PROTOCOL_VERSION, (uint8_t)(FTR_ACK & 0xFF), (uint8_t)(FTR_ACK >> 8),
+                  (uint8_t)shadow_valid};
   send_up(CMD_READY, seq, p, 4);
+}
+
+// sent right after the wave of a drawn frame completes; the host paces
+// its sends on this, which is what protects the RX ring during a wave
+static void send_frame_ack(uint8_t seq) {
+  if (!ack_enabled) return;
+  send_up(CMD_FRAME_ACK, seq, &seq, 1);
 }
 
 // one ERROR per rejected binary frame; the text mode gets none (it has
@@ -285,6 +303,8 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
       epd.drawFull(p, take_full_refresh());
       shadow_valid = true;  // the host shadow can now be trusted
       mode = MODE_DASHBOARD;
+      last_drawn_seq = seq;
+      send_frame_ack(seq);
       return true;
     case CMD_FRAME_RECT:
       if (len < 8) { send_error(seq, ERR_BAD_LENGTH); return false; }
@@ -322,11 +342,15 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
         }
         epd.drawRect(x, y, w, h, p + 8, full);
         mode = MODE_DASHBOARD;
+        last_drawn_seq = seq;
+        send_frame_ack(seq);
         return true;
       }
     case CMD_CLEAR:
       if (len != 1) { send_error(seq, ERR_BAD_LENGTH); return false; }
       epd.clear(p[0]);
+      last_drawn_seq = seq;
+      send_frame_ack(seq);
       return true;
     case CMD_SET_MODE:
       if (len != 1) { send_error(seq, ERR_BAD_LENGTH); return false; }
@@ -456,7 +480,9 @@ static void poll_key_debug() {
 
 void setup() {
   Serial0.setRxBufferSize(8192);  // a full frame is 27 KB: the default 256 bytes is not enough;
-                                  // while a wave runs (~2.3 s) the UART is not serviced - see the note in loop()
+                                  // the ring covers ~178 ms of traffic at 460800, and a wave blocks
+                                  // the loop for ~2.3 s - the host paces frames by waiting for
+                                  // FRAME_ACK, which is what actually protects this buffer
   Serial0.begin(SERIAL_BAUD);     // UART0 = CH340 bridge: protocol and logs in one stream
   crc32_init();
 

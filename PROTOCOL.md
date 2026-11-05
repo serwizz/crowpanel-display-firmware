@@ -56,8 +56,11 @@ negotiation.
 `features` is a capability bitmap: 0x0001 ACK (FRAME_ACK pacing), 0x0002
 SHADOW_CRC (shadow CRC32 in PONG), 0x0004 TIME (clock on the neutral
 screen), 0x0008 RLE (reserved, not activated until it proves itself on
-real frames). `shadow_valid` is 0 until the first FRAME_FULL after
-startup (a RECT before that has no base to apply to), 1 after.
+real frames). The bits gate optional behavior within the same major
+version: the panel sets the bits for the features it implements and a
+host checks the bit before relying on a feature. `shadow_valid` is 0
+until the first FRAME_FULL after startup (a RECT before that has no
+base to apply to), 1 after.
 
 ## Host -> panel commands
 
@@ -81,9 +84,10 @@ SET_CONFIG (reserved for a Wi-Fi evolution): repeating
 
 | cmd  | name       | payload                                                            |
 |------|------------|--------------------------------------------------------------------|
-| 0x02 | PONG       | uptime_ms (u32 LE) + mode (u8)                                     |
+| 0x02 | PONG       | uptime_ms (u32 LE) + mode (u8) + last_drawn_seq (u8); last_drawn_seq is the seq of the last drawn frame, updated BEFORE FRAME_ACK is sent - this ordering is what makes the lost-ACK fallback sound |
 | 0x81 | READY      | protocol_version (u8) + features (u16 LE) + shadow_valid (u8); at startup and on HELLO |
 | 0x82 | ERROR      | seq of the rejected frame (u8) + code (u8)                         |
+| 0x83 | FRAME_ACK  | seq of the drawn frame (u8; the same byte as the payload); sent after a FRAME_FULL/FRAME_RECT/CLEAR wave completes (SET_MODE draws too but is state-only - no ACK) |
 | 0x80 | KEY_EVENT  | key (u8) + event (u8) + value (i16 LE)                             |
 
 The panel answers a binary frame it cannot execute with exactly one
@@ -159,6 +163,8 @@ Lines travel over the same port, terminated by `\n`:
 
 - to the panel: `ping`, `mode <0|1|2>`, `refresh` - the same actions
   without binary encoding (`mode 2` draws the neutral screen at once);
+  `ackoff`/`ackon` - suppress/re-enable FRAME_ACK (simulates a lost ACK
+  to exercise the host fallback: PING with last_drawn_seq);
 - from the panel: firmware debug lines (`[epd]`, `[key]`, ... prefixes);
   a binary PONG frame answers both the binary PING and the text `ping`.
 
@@ -171,7 +177,12 @@ A full frame over UART at 460800 takes about 0.6 s. A smooth update runs
 ~2.35 s end to end (reset + temperature ~50 ms, compose ~90 ms, RAM
 upload ~540 ms, wave ~1660 ms); a full flashing refresh replaces the
 wave with a ~2260 ms one. While a wave runs the firmware does not
-service the UART, and the 8 KB RX ring covers only ~178 ms of traffic,
-so until FRAME_ACK pacing is negotiated through `features` the host must
-not stream frames back to back: wait for the previous update to land
-(a PING round trip is a safe spacer) or bytes are lost to "bad CRC".
+service the UART, and the 8 KB RX ring covers only ~178 ms of traffic -
+so the host paces frames: it does not send the next frame until
+FRAME_ACK(seq) for the previous one arrives, or, after a timeout, a
+PONG shows last_drawn_seq == seq (the wave completed, only the ACK was
+lost). A host that ignores this loses bytes to "bad CRC" drops. A frame
+sent while the firmware is still booting (before the UART is serviced)
+is lost in the FIFO; the missing FRAME_ACK plus a PONG showing an
+unchanged last_drawn_seq makes the host resend once - the path
+self-heals.
