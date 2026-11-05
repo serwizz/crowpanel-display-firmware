@@ -83,7 +83,14 @@ u32 overflows are rejected with ERROR BAD_VALUE and leave the previous
 value unchanged; 1..29 clamp to 30; above 3600 clamps to 3600; anything
 else applies as-is. A successful tuple is answered with CONFIG_VALUE
 carrying the applied u32 (observability: the host sees the clamp).
-Unknown keys are rejected with ERROR BAD_VALUE.
+Unknown keys are rejected with ERROR BAD_VALUE. Tuples apply
+sequentially: a rejected tuple leaves the values already applied in
+place (each successful tuple still got its own CONFIG_VALUE). The
+configuration is volatile - a panel reboot resets it to the defaults,
+and the host is expected to re-apply its desired configuration when it
+sees a boot READY mid-session. The host verifies the CONFIG_VALUE echo
+against its own clamp computation; a disagreement is a loud error, not
+a silent drift.
 
 ## Panel -> host commands
 
@@ -143,6 +150,9 @@ When the heartbeat fail-safe draws the neutral screen, the panel shadow
 becomes all-white and disagrees with the host shadow by design: the
 next ping raises the mismatch flag and the host redraws its content -
 while the host is alive it is the source of truth for the panel.
+The firmware updates its shadow together with the draw command, before
+the wave runs; a power loss mid-wave reboots the panel, and startup
+resets `shadow_valid` to 0 - a wrong CRC claim cannot persist silently.
 
 Text-mode garbage and unrecognized text lines get no ERROR: the text
 mode has no seq and its stray lines are legitimate resynchronization.
@@ -184,9 +194,11 @@ Firmware: when no accepted frame arrives from the host for
 `hb_timeout` seconds (default 120; SET_CONFIG clamps the key to
 30..3600), the panel draws a neutral screen by itself and switches to
 NEUTRAL mode. Only frames the
-panel accepts reset the timer; rejected frames (the ERROR answers) do
-not - a host that keeps sending garbage must not hold the panel off its
-privacy fail-safe. Host: sends PING every 30 s while idle. This covers
+panel accepts reset the timer (a drawn frame, an applied SET_CONFIG, a
+PING - all of them; narrowing hb_timeout through SET_CONFIG can
+therefore never fire the fail-safe on the spot); rejected frames (the
+ERROR answers) do not - a host that keeps sending garbage must not hold
+the panel off its privacy fail-safe. Host: sends PING every 30 s while idle. This covers
 screen lock, host reboots, an unplugged cable, a hung host process. A
 successfully drawn FRAME_FULL or FRAME_RECT switches the panel to
 DASHBOARD from any mode, including NEUTRAL: new content replaces the
