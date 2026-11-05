@@ -497,46 +497,6 @@ static void poll_buttons() {
   }
 }
 
-// ---------- button diagnostics: scanning free GPIOs ----------
-// The button pin map IO1/2/4/5/6 is confirmed by live events (2026-11-03).
-// The scan stays as transition diagnostics. Do NOT add IO33-37 to
-// SCAN_PINS: on the ESP32-S3R8 (octal PSRAM, qio_opi) those are MSPI bus
-// lines - pinMode on them steals the lines from the controller, and the
-// first received byte (the UART RX ring lives in PSRAM) hangs the bus:
-// TG1WDT_SYS_RST after ~1 s.
-
-static const uint8_t SCAN_PINS[] = {
-    0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 15, 16, 17, 18, 19, 21,
-    41, 42,
-};
-
-static void poll_key_debug() {
-  static uint32_t last_poll = 0;
-  if (millis() - last_poll < 10) return;  // 100 Hz poll: debounce visible, no noise
-  last_poll = millis();
-  static uint32_t last = 0;
-  static bool first = true;
-  uint32_t cur = 0;
-  for (uint8_t i = 0; i < sizeof(SCAN_PINS); i++) {
-    pinMode(SCAN_PINS[i], INPUT_PULLUP);
-    cur |= (digitalRead(SCAN_PINS[i]) ? 1u : 0u) << i;
-  }
-  if (first) {
-    first = false;
-    Serial0.print("[scan] boot levels:");
-    for (uint8_t i = 0; i < sizeof(SCAN_PINS); i++)
-      Serial0.printf(" IO%d=%d", SCAN_PINS[i], (cur >> i) & 1);
-    Serial0.printf("\n");
-  } else if (cur != last) {
-    for (uint8_t i = 0; i < sizeof(SCAN_PINS); i++) {
-      if (((cur ^ last) >> i) & 1)
-        Serial0.printf("[scan] IO%d: %d -> %d\n", SCAN_PINS[i],
-                       (last >> i) & 1, (cur >> i) & 1);
-    }
-  }
-  last = cur;
-}
-
 // ---------- setup / loop ----------
 
 void setup() {
@@ -572,7 +532,6 @@ void loop() {
 
   poll_buttons();
   poll_encoder();
-  poll_key_debug();
 
   // fail-safe: the host has been silent longer than hb_timeout_s (default
   // HB_TIMEOUT_S, SET_CONFIG clamps it to HB_TIMEOUT_MIN_S..MAX_S) - hide
