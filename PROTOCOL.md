@@ -162,6 +162,11 @@ When the heartbeat fail-safe draws the neutral screen, the panel shadow
 becomes all-white and disagrees with the host shadow by design: the
 next ping raises the mismatch flag and the host redraws its content -
 while the host is alive it is the source of truth for the panel.
+A host that never draws (heartbeat only) keeps an empty shadow: while
+the panel shows the built-in neutral screen the CRC intentionally
+disagrees, so the host skips the check for a neutral PONG mode; the
+first PONG after leaving NEUTRAL raises the flag and the next send is
+a full frame.
 The firmware updates its shadow together with the draw command, before
 the wave runs; a power loss mid-wave reboots the panel, and startup
 resets `shadow_valid` to 0 - a wrong CRC claim cannot persist silently.
@@ -212,9 +217,14 @@ therefore never fire the fail-safe on the spot); rejected frames (the
 ERROR answers) do not - a host that keeps sending garbage must not hold
 the panel off its privacy fail-safe. Host: sends PING every 30 s while idle. This covers
 screen lock, host reboots, an unplugged cable, a hung host process. A
-successfully drawn FRAME_FULL or FRAME_RECT switches the panel to
+successfully drawn FRAME_FULL switches the panel to
 DASHBOARD from any mode, including NEUTRAL: new content replaces the
-neutral screen.
+neutral screen. A FRAME_RECT composes over the current screen content:
+coming out of the built-in neutral screen with a rect lands the delta
+on top of the clock digits, so a host leaving the panel-side NEUTRAL
+must send a FRAME_FULL first - or accept the composite until the next
+full frame. Freshly connected hosts get this automatically (a
+reconnect starts with a forced full frame).
 The neutral screen itself is a white field plus a large HH:MM centered,
 once the host has set the clock (TIME 0x17). The panel has no RTC: at
 a heartbeat timeout the clock freezes at the last accepted value, and
@@ -236,7 +246,8 @@ commands themselves are best-effort: the panel cannot detect their
 loss, so the host re-sends TIME on its period and can verify a mode
 change through the mode field of PONG. A host that draws right after
 setting the clock should wait for the wave (~3.5 s) or accept the
-resend.
+resend. The same window deafens the button and encoder polls (they run
+in the same loop): short presses inside a wave are lost.
 
 ## Text debug mode
 

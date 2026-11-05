@@ -110,6 +110,7 @@ static Ssd1683Epd epd;  // orientation defaults; flip flags after the marker che
 static uint8_t mode = MODE_SPLASH;
 static bool shadow_valid = false;  // true after the first FRAME_FULL (stage 4 semantics)
 static bool clock_known = false;   // stage 6: set by TIME; the panel has no RTC
+static bool clock_stale = false;   // drawn by the heartbeat timeout (colon hidden)
 static uint8_t clock_h = 0, clock_m = 0;
 static uint32_t frames_since_full = 0;
 static const uint32_t FULL_REFRESH_EVERY = 50;  // full refresh once per N frames
@@ -132,6 +133,7 @@ static bool set_mode(uint8_t m) {
     return false;
   }
   if (m == MODE_NEUTRAL) {
+    if (mode == MODE_NEUTRAL) return true;  // already there: no second wave
     // switching to NEUTRAL must replace the content right away: the
     // heartbeat timer only draws while mode != NEUTRAL, so without an
     // immediate draw the old content would stay on the glass for good
@@ -161,7 +163,7 @@ static void handle_text_line(char* line) {
     char tail = 0;
     // %c in the format catches trailing garbage: "23:45x" must not pass
     if (sscanf(line + 5, "%d:%d%c", &h, &m, &tail) == 2 && h >= 0 && h < 24 && m >= 0 && m < 60) {
-      bool changed = !clock_known || clock_h != (uint8_t)h || clock_m != (uint8_t)m;
+      bool changed = !clock_known || clock_h != (uint8_t)h || clock_m != (uint8_t)m || clock_stale;
       clock_h = (uint8_t)h; clock_m = (uint8_t)m; clock_known = true;
       if (mode == MODE_NEUTRAL && changed) draw_neutral_builtin("time update", true);
     } else {
@@ -445,7 +447,7 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
       if (len != 2) { send_error(seq, ERR_BAD_LENGTH); return false; }
       if (p[0] > 23 || p[1] > 59) { send_error(seq, ERR_BAD_VALUE); return false; }
       {
-        bool changed = !clock_known || clock_h != p[0] || clock_m != p[1];
+        bool changed = !clock_known || clock_h != p[0] || clock_m != p[1] || clock_stale;
         clock_h = p[0]; clock_m = p[1]; clock_known = true;
         if (mode == MODE_NEUTRAL && changed) draw_neutral_builtin("time update", true);
       }
@@ -514,6 +516,7 @@ static void draw_neutral_builtin(const char* why, bool live) {
   Serial0.printf("[fail-safe] %s - drawing neutral screen\n", why);
   memset(frame_buf, 0, FULL_FRAME_BYTES);  // 0 = white (protocol: 1 = black)
   if (clock_known) compose_clock(frame_buf, live);
+  clock_stale = !live;  // a heartbeat-timeout clock must come back on the next TIME
   epd.drawFull(frame_buf, true);           // neutral always drives full
   frames_since_full = 0;  // a neutral wave is a full wave: anchor the period
   mode = MODE_NEUTRAL;
