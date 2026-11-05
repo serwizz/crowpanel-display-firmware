@@ -54,13 +54,13 @@ together, so a version gap means a broken setup, not a feature
 negotiation.
 
 `features` is a capability bitmap: 0x0001 ACK (FRAME_ACK pacing), 0x0002
-SHADOW_CRC (shadow CRC32 in PONG), 0x0004 TIME (clock on the neutral
-screen), 0x0008 RLE (reserved, not activated until it proves itself on
-real frames). The bits gate optional behavior within the same major
-version: the panel sets the bits for the features it implements and a
-host checks the bit before relying on a feature. `shadow_valid` is 0
-until the first FRAME_FULL after startup (a RECT before that has no
-base to apply to), 1 after.
+SHADOW_CRC (shadow_crc in PONG, see Shadow consistency), 0x0004 TIME
+(clock on the neutral screen), 0x0008 RLE (reserved, not activated
+until it proves itself on real frames). The bits gate optional behavior
+within the same major version: the panel sets the bits for the features
+it implements and a host checks the bit before relying on a feature.
+`shadow_valid` is 0 until the first FRAME_FULL after startup (a RECT
+before that has no base to apply to), 1 after.
 
 ## Host -> panel commands
 
@@ -84,7 +84,7 @@ SET_CONFIG (reserved for a Wi-Fi evolution): repeating
 
 | cmd  | name       | payload                                                            |
 |------|------------|--------------------------------------------------------------------|
-| 0x02 | PONG       | uptime_ms (u32 LE) + mode (u8) + last_drawn_seq (u8); last_drawn_seq is the seq of the last drawn frame, updated BEFORE FRAME_ACK is sent - this ordering is what makes the lost-ACK fallback sound |
+| 0x02 | PONG       | uptime_ms (u32 LE) + mode (u8) + last_drawn_seq (u8) + shadow_crc (u32 LE); last_drawn_seq updates BEFORE FRAME_ACK is sent - this ordering is what makes the lost-ACK fallback sound. It stays 0 until the first frame is drawn (safe: the host never sends seq 0), and the lost-ACK recovery compares it by equality - wrap-safe across 255 -> 0, no side ever compares seqs for order |
 | 0x81 | READY      | protocol_version (u8) + features (u16 LE) + shadow_valid (u8); at startup and on HELLO |
 | 0x82 | ERROR      | seq of the rejected frame (u8) + code (u8)                         |
 | 0x83 | FRAME_ACK  | seq of the drawn frame (u8; the same byte as the payload); sent after a FRAME_FULL/FRAME_RECT/CLEAR wave completes (SET_MODE draws too but is state-only - no ACK) |
@@ -109,6 +109,34 @@ watchdog resets it and the panel reboots into the startup state.
 | 3    | OUT_OF_BOUNDS   | FRAME_RECT outside the 272x792 screen                         |
 | 4    | BAD_VALUE       | SET_MODE outside 0..2                                         |
 | 5    | SHADOW_INVALID  | FRAME_RECT before the first FRAME_FULL (no shadow base)       |
+
+## Shadow consistency
+
+`shadow_crc` is the CRC32 (the same IEEE table as the frames) of the
+panel's full shadow buffer - the last drawn frame with every rect
+applied, 26928 bytes in the protocol orientation. A host that tracks
+what it sent keeps its own copy of the shadow: a full frame replaces
+it, a rect is blitted into it. On every PONG the host compares its copy
+against `shadow_crc`; a mismatch (a lost write, a reboot, a bug) means
+the copies diverged, and the host's next send is a FRAME_FULL, not a
+RECT. READY reports `shadow_valid = 0` after startup for the same
+reason: the first frame after a panel reboot is always a full one. A
+RECT arriving before that gets ERROR SHADOW_INVALID. Once the copies
+match again (`shadow_crc` agrees), the host goes back to rects.
+
+A rect outside the 272x792 screen is rejected with ERROR OUT_OF_BOUNDS,
+never clipped: both sides validate the geometry identically before any
+pixel moves, so a clipping divergence cannot arise by construction.
+CLEAR fills the shadow with the solid color on the panel side; a host
+that sends CLEAR must fill its own shadow with the same color - a raw
+send would diverge the shadows, and the mismatch recovery above would
+redraw the pre-clear image over the cleared screen. The check runs on
+every PONG, so with a host heartbeating every N seconds the worst-case
+stale-content window after a silent divergence is one heartbeat period.
+When the heartbeat fail-safe draws the neutral screen, the panel shadow
+becomes all-white and disagrees with the host shadow by design: the
+next ping raises the mismatch flag and the host redraws its content -
+while the host is alive it is the source of truth for the panel.
 
 Text-mode garbage and unrecognized text lines get no ERROR: the text
 mode has no seq and its stray lines are legitimate resynchronization.

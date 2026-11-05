@@ -255,15 +255,17 @@ static void feed_byte(uint8_t b) {
 
 static void send_pong(uint8_t seq) {
   uint32_t up = millis();
-  uint8_t p[6] = {(uint8_t)up, (uint8_t)(up >> 8), (uint8_t)(up >> 16),
-                  (uint8_t)(up >> 24), mode, last_drawn_seq};
-  send_up(CMD_PONG, seq, p, 6);
+  uint32_t shc = crc32_calc(epd.shadow(), FULL_FRAME_BYTES);
+  uint8_t p[10] = {(uint8_t)up, (uint8_t)(up >> 8), (uint8_t)(up >> 16),
+                   (uint8_t)(up >> 24), mode, last_drawn_seq,
+                   (uint8_t)shc, (uint8_t)(shc >> 8), (uint8_t)(shc >> 16), (uint8_t)(shc >> 24)};
+  send_up(CMD_PONG, seq, p, 10);
 }
 
 // READY v2: version + features (u16 LE) + shadow_valid
 static void send_ready(uint8_t seq) {
-  uint8_t p[4] = {PROTOCOL_VERSION, (uint8_t)(FTR_ACK & 0xFF), (uint8_t)(FTR_ACK >> 8),
-                  (uint8_t)shadow_valid};
+  uint8_t p[4] = {PROTOCOL_VERSION, (uint8_t)((FTR_ACK | FTR_SHADOW_CRC) & 0xFF),
+                  (uint8_t)((FTR_ACK | FTR_SHADOW_CRC) >> 8), (uint8_t)shadow_valid};
   send_up(CMD_READY, seq, p, 4);
 }
 
