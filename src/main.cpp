@@ -34,10 +34,10 @@ static const int PIN_ENC_CONF = 5;
 
 // ---------- forward declarations ----------
 
-static void send_pong();
+static void send_pong(uint8_t seq);
 static void set_mode(uint8_t m);
 static void draw_neutral_builtin(const char* why);
-static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len);
+static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t seq);
 static uint32_t crc32_update(const uint8_t* data, size_t len, uint32_t c);
 
 // ---------- CRC32 (IEEE, same as zlib.crc32 on the host) ----------
@@ -65,13 +65,18 @@ static uint32_t crc32_calc(const uint8_t* data, size_t len) {
 
 static uint8_t frame_buf[MAX_PAYLOAD];  // payload receive buffer (64 KB)
 
-static void send_up(uint8_t cmd, const uint8_t* payload, uint16_t len) {
-  uint8_t head[5] = {FRAME_MAGIC[0], FRAME_MAGIC[1], cmd, (uint8_t)(len & 0xFF),
+static uint8_t up_seq = 0;  // autonomous upstream frames counter
+static uint8_t next_seq() { return ++up_seq ? up_seq : ++up_seq; }
+
+// seq: responses to a request echo its seq; autonomous frames (boot
+// READY, KEY_EVENT) take the next value of the panel-side counter
+static void send_up(uint8_t cmd, uint8_t seq, const uint8_t* payload, uint16_t len) {
+  uint8_t head[6] = {FRAME_MAGIC[0], FRAME_MAGIC[1], cmd, seq, (uint8_t)(len & 0xFF),
                      (uint8_t)(len >> 8)};
-  Serial0.write(head, 5);
+  Serial0.write(head, 6);
   if (len) Serial0.write(payload, len);
-  uint8_t body_for_crc[3] = {cmd, (uint8_t)(len & 0xFF), (uint8_t)(len >> 8)};
-  uint32_t crc = crc32_update(body_for_crc, 3, 0xFFFFFFFFu);
+  uint8_t body_for_crc[4] = {cmd, seq, (uint8_t)(len & 0xFF), (uint8_t)(len >> 8)};
+  uint32_t crc = crc32_update(body_for_crc, 4, 0xFFFFFFFFu);
   if (len) crc = crc32_update(payload, len, crc);
   crc ^= 0xFFFFFFFFu;
   uint8_t crc_le[4] = {(uint8_t)crc, (uint8_t)(crc >> 8), (uint8_t)(crc >> 16),
@@ -81,7 +86,7 @@ static void send_up(uint8_t cmd, const uint8_t* payload, uint16_t len) {
 
 static void send_key(uint8_t key, uint8_t event, int16_t value) {
   uint8_t p[4] = {key, event, (uint8_t)(value & 0xFF), (uint8_t)((value >> 8) & 0xFF)};
-  send_up(CMD_KEY_EVENT, p, 4);
+  send_up(CMD_KEY_EVENT, next_seq(), p, 4);
 }
 
 // ---------- display driver ----------
@@ -133,7 +138,7 @@ static uint8_t text_len = 0;
 
 static void handle_text_line(char* line) {
   if (!strcmp(line, "ping")) {
-    send_pong();
+    send_pong(0);  // text mode is outside the seq numbering
   } else if (!strncmp(line, "mode ", 5)) {
     set_mode(atoi(line + 5));
   } else if (!strcmp(line, "refresh")) {
@@ -163,12 +168,13 @@ static void feed_text(uint8_t b) {
 // ---------- receive: binary frames ----------
 
 struct RxState {
-  enum Phase { SYNC1, SYNC2, CMD, LEN1, LEN2, PAYLOAD, CRC1, CRC2, CRC3, CRC4 };
+  enum Phase { SYNC1, SYNC2, CMD, SEQ, LEN1, LEN2, PAYLOAD, CRC1, CRC2, CRC3, CRC4 };
   Phase phase = SYNC1;
   uint8_t cmd = 0;
+  uint8_t seq = 0;
   uint16_t len = 0;
   uint16_t got = 0;
-  uint8_t hdr[3];  // cmd + len(2) - start of the frame body for CRC
+  uint8_t hdr[4];  // cmd + seq + len(2) - start of the frame body for CRC
   uint32_t crc_got = 0;
   uint32_t last_byte_ms = 0;  // receive timeout: a break mid-frame
 };
@@ -190,11 +196,13 @@ static void feed_byte(uint8_t b) {
       else { rx.phase = RxState::SYNC1; feed_text(b); }
       return;
     case RxState::CMD:
-      rx.cmd = b; rx.hdr[0] = b; rx.phase = RxState::LEN1; return;
+      rx.cmd = b; rx.hdr[0] = b; rx.phase = RxState::SEQ; return;
+    case RxState::SEQ:
+      rx.seq = b; rx.hdr[1] = b; rx.phase = RxState::LEN1; return;
     case RxState::LEN1:
-      rx.len = b; rx.hdr[1] = b; rx.phase = RxState::LEN2; return;
+      rx.len = b; rx.hdr[2] = b; rx.phase = RxState::LEN2; return;
     case RxState::LEN2: {
-      rx.len |= ((uint16_t)b) << 8; rx.hdr[2] = b;
+      rx.len |= ((uint16_t)b) << 8; rx.hdr[3] = b;
       if (rx.len > MAX_PAYLOAD) { rx.phase = RxState::SYNC1; return; }
       rx.got = 0;
       // with len == 0 there is no payload phase at all - straight to CRC
@@ -212,11 +220,11 @@ static void feed_byte(uint8_t b) {
       rx.crc_got |= ((uint32_t)b) << 24;
       // CRC is computed in one continuous pass: hdr + payload, a single
       // final xor; crc32_calc does not fit here (it xors at the end)
-      uint32_t crc = crc32_update(rx.hdr, 3, 0xFFFFFFFFu);
+      uint32_t crc = crc32_update(rx.hdr, 4, 0xFFFFFFFFu);
       if (rx.got) crc = crc32_update(frame_buf, rx.got, crc);
       crc ^= 0xFFFFFFFFu;
       if (crc == rx.crc_got) {
-        handle_frame(rx.cmd, frame_buf, rx.len);
+        handle_frame(rx.cmd, frame_buf, rx.len, rx.seq);
         last_host_frame_ms = millis();
       } else {
         Serial0.printf("[rx] bad CRC, frame dropped\n");
@@ -231,17 +239,28 @@ static void feed_byte(uint8_t b) {
 
 // ---------- host command handlers ----------
 
-static void send_pong() {
+static void send_pong(uint8_t seq) {
   uint32_t up = millis();
   uint8_t p[5] = {(uint8_t)up, (uint8_t)(up >> 8), (uint8_t)(up >> 16),
                   (uint8_t)(up >> 24), mode};
-  send_up(CMD_PONG, p, 5);
+  send_up(CMD_PONG, seq, p, 5);
 }
 
-static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len) {
+// READY v2: version + features (u16 LE) + shadow_valid; features stay 0
+// until their stages land (ACK - stage 3, shadow CRC - stage 4, TIME -
+// stage 6), shadow_valid stays 1 until stage 4
+static void send_ready(uint8_t seq) {
+  uint8_t p[4] = {PROTOCOL_VERSION, 0, 0, 1};  // features = 0 until stages 3-6
+  send_up(CMD_READY, seq, p, 4);
+}
+
+static void handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t seq) {
   switch (cmd) {
     case CMD_PING:
-      send_pong();
+      send_pong(seq);
+      break;
+    case CMD_HELLO:
+      send_ready(seq);
       break;
     case CMD_FRAME_FULL:
       if (len == FULL_FRAME_BYTES) {
@@ -419,8 +438,8 @@ void setup() {
   mode = MODE_SPLASH;
   last_host_frame_ms = millis();
 
-  uint8_t ready[2] = {PROTOCOL_VERSION, mode};
-  send_up(CMD_READY, ready, 2);
+  uint8_t ready[4] = {PROTOCOL_VERSION, 0, 0, 1};  // features = 0 until stages 3-6
+  send_up(CMD_READY, next_seq(), ready, 4);
 }
 
 void loop() {

@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 
-static const uint8_t PROTOCOL_VERSION = 1;
+static const uint8_t PROTOCOL_VERSION = 2;
 
 static const uint8_t FRAME_MAGIC[2] = {0xA7, 0x1C};
 
@@ -23,6 +23,8 @@ enum Cmd : uint8_t {
   CMD_SET_MODE = 0x13,
   CMD_FULL_REFRESH = 0x14,
   CMD_SET_CONFIG = 0x15,
+  CMD_HELLO = 0x16,
+  CMD_TIME = 0x17,  // stage 6, reserved
 };
 
 // panel -> host commands
@@ -31,6 +33,13 @@ enum CmdUp : uint8_t {
   CMD_KEY_EVENT = 0x80,
   CMD_READY = 0x81,
 };
+
+// READY capabilities bitmap (features field, u16 LE). A host requires
+// the exact PROTOCOL_VERSION match; features only gate optional behavior.
+static const uint16_t FTR_ACK = 0x0001;         // FRAME_ACK pacing (stage 3)
+static const uint16_t FTR_SHADOW_CRC = 0x0002;  // shadow CRC in PONG (stage 4)
+static const uint16_t FTR_TIME = 0x0004;        // TIME command and clock (stage 6)
+static const uint16_t FTR_RLE = 0x0008;         // RLE-compressed frames (reserved)
 
 enum Mode : uint8_t { MODE_SPLASH = 0, MODE_DASHBOARD = 1, MODE_NEUTRAL = 2 };
 
