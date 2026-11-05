@@ -29,7 +29,12 @@ offset  size  field
 On a magic or CRC mismatch the receiver keeps scanning the stream for
 the next magic (resynchronization). A full frame is 26928 payload bytes
 plus 11 bytes of overhead and fits into a single frame; no chunking is
-needed.
+needed. `len` is the payload length, 0..65535; 26928 (FRAME_FULL) is
+the largest payload the protocol ever carries. The receive buffer
+matches the 65535 maximum, so a parse-level overflow is impossible; a
+payload that buffers fine but does not match the command is rejected
+with ERROR BAD_LENGTH (below), and a mid-frame break longer than 500 ms
+resynchronizes the parser back to SYNC.
 
 ## Sequence numbers
 
@@ -58,7 +63,10 @@ SHADOW_CRC (shadow_crc in PONG, see Shadow consistency), 0x0004 TIME
 (clock on the neutral screen), 0x0008 RLE (reserved, not activated
 until it proves itself on real frames). The bits gate optional behavior
 within the same major version: the panel sets the bits for the features
-it implements and a host checks the bit before relying on a feature.
+it implements and a host checks the bit before relying on a feature;
+bits a host does not know are ignored, so the bitmap is
+forward-compatible in both directions (an old host keeps working with a
+new panel and vice versa, gated to the common bits).
 `shadow_valid` is 0 until the first FRAME_FULL after startup (a RECT
 before that has no base to apply to), 1 after.
 
