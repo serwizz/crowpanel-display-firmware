@@ -1,6 +1,7 @@
 // Dual SSD1683 cascade driver for the CrowPanel 5.79 panel (272x792).
 //
-// Factory model (validated on real hardware, see the bring-up sketch):
+// Factory model (validated on real hardware against the factory
+// Elecrow reference implementation):
 // - two controllers share the SPI bus; the slave is addressed through
 //   the 0x91 0x04 prefix and registers 0xC4/0xC5/0xCE/0xCF/0xA4 (old RAM
 //   0x26/0xA6 stays untouched: the factory model drives only the new RAM);
