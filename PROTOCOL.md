@@ -48,8 +48,7 @@ outgoing frames from 1, skipping 0 on an 8-bit overflow. A response
 (PONG, READY, later ERROR/FRAME_ACK/CONFIG_VALUE) echoes the seq of the
 request it answers. Autonomous panel frames (the boot READY, KEY_EVENT)
 use the panel-side counter. Text-mode lines are not frames and carry no
-seq at all; the binary PONG that answers a text `ping` goes out with
-seq = 0.
+seq at all.
 
 ## Handshake
 
@@ -221,12 +220,13 @@ neutral screen.
 
 Lines travel over the same port, terminated by `\n`:
 
-- to the panel: `ping`, `mode <0|1|2>`, `refresh` - the same actions
-  without binary encoding (`mode 2` draws the neutral screen at once);
-  `ackoff`/`ackon` - suppress/re-enable FRAME_ACK (simulates a lost ACK
-  to exercise the host fallback: PING with last_drawn_seq);
-- from the panel: firmware debug lines (`[epd]`, `[key]`, ... prefixes);
-  a binary PONG frame answers both the binary PING and the text `ping`.
+- to the panel: `ping` - answered with one text line, exactly:
+  `[pong] uptime=<ms> ms mode=<0|1|2> shadow_crc=0x<8 lowercase hex>`;
+  `mode <0|1|2>`, `refresh` - the same actions without binary encoding
+  (`mode 2` draws the neutral screen at once); `ackoff`/`ackon` -
+  suppress/re-enable FRAME_ACK (simulates a lost ACK to exercise the
+  host fallback: PING with last_drawn_seq);
+- from the panel: firmware debug lines (`[epd]`, `[key]`, ... prefixes).
 
 ASCII lines never collide with the binary magic, so there is no
 ambiguity.

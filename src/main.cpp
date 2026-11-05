@@ -147,7 +147,11 @@ static uint8_t text_len = 0;
 
 static void handle_text_line(char* line) {
   if (!strcmp(line, "ping")) {
-    send_pong(0);  // text mode is outside the seq numbering
+    // text mode is for humans at a terminal: answer with a readable
+    // line, not a binary frame (binary PONG answers binary PING only)
+    Serial0.printf("[pong] uptime=%lu ms mode=%u shadow_crc=0x%08lx\n",
+                   (unsigned long)millis(), (unsigned)mode,
+                   (unsigned long)crc32_calc(epd.shadow(), FULL_FRAME_BYTES));
   } else if (!strncmp(line, "mode ", 5)) {
     set_mode(atoi(line + 5));
   } else if (!strcmp(line, "refresh")) {
