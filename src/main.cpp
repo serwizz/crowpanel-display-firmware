@@ -465,10 +465,10 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
 // a frozen wall time misleads (the panel has no RTC), so the 2026-11-06
 // decision dropped it (TIME is deprecated, see the protocol docs).
 
-// Landscape mounting (cable at the top edge, workbench plan-stage8-
-// landscape): the wire raster is the panel's native 272x792 portrait and
-// reads on the glass rotated. Convention (the host renders the same
-// way): a landscape pixel (lx,ly) lands at wire (nx = ly, ny = lx).
+// Landscape mounting (cable at the top edge): the wire raster is the
+// panel's native 272x792 portrait and reads on the glass rotated.
+// Convention (the host renders the same way): a landscape pixel (lx,ly)
+// lands at wire (nx = ly, ny = lx).
 static void set_land_px(uint8_t* buf, int16_t lx, int16_t ly) {
   buf[(size_t)lx * PROTO_STRIDE + (ly >> 3)] |= (uint8_t)(0x80 >> (ly & 7));
 }
