@@ -24,7 +24,7 @@ enum Cmd : uint8_t {
   CMD_FULL_REFRESH = 0x14,
   CMD_SET_CONFIG = 0x15,
   CMD_HELLO = 0x16,
-  CMD_TIME = 0x17,  // hour, minute; sets the panel clock
+  CMD_TIME = 0x17,  // retired 2026-11-06: validated and discarded (no clock)
 };
 
 // panel -> host commands
@@ -50,7 +50,10 @@ enum Err : uint8_t {
 // the exact PROTOCOL_VERSION match; features only gate optional behavior.
 static const uint16_t FTR_ACK = 0x0001;         // FRAME_ACK pacing
 static const uint16_t FTR_SHADOW_CRC = 0x0002;  // shadow CRC in PONG
-static const uint16_t FTR_TIME = 0x0004;        // TIME command and clock
+static const uint16_t FTR_TIME = 0x0004;        // retired 2026-11-06: the
+// reference firmware no longer renders a clock, never advertises this
+// bit and discards TIME; the constant stays defined so old builds keep
+// parsing READY, and the bit is never reused (old hosts would misfire)
 static const uint16_t FTR_RLE = 0x0008;         // RLE-compressed frames (reserved)
 
 enum Mode : uint8_t { MODE_SPLASH = 0, MODE_DASHBOARD = 1, MODE_NEUTRAL = 2 };

@@ -9,7 +9,10 @@ host: send a new picture to change it, no reflashing.
 A privacy fail-safe is built in: if the host stops sending anything
 for `HB_TIMEOUT` seconds (default 120), the panel replaces the content
 with a neutral screen by itself. This covers an unplugged cable, a
-sleeping host, a crashed one.
+sleeping host, a crashed one. The neutral screen is a white field with
+a small built-in landscape ornament - deliberately no clock (the panel
+has no RTC, and stale time misleads; TIME 0x17 is retired, see
+PROTOCOL.md).
 
 ## What works (verified on real hardware)
 
@@ -20,6 +23,9 @@ sleeping host, a crashed one.
   supports - so the driver here is our own. Regular updates are
   smooth, without flashing, and take about 1.7 s; a full refresh
   takes about 2.3 s and flashes.
+- The panel mounts landscape (cable up); the wire raster is unchanged
+  272x792, and both the host renderer and the built-in screens follow
+  the same transposition convention (PROTOCOL.md, Bitmap).
 
 ## Hardware
 

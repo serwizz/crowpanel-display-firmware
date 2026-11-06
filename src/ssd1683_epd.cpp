@@ -266,4 +266,12 @@ void Ssd1683Epd::clear(uint8_t colorBlack) {
 
 void Ssd1683Epd::waitIdle() { waitBusy("idle"); }
 
+void Ssd1683Epd::powerCycle() {
+  pinMode(PIN_EPD_PWR, OUTPUT);
+  digitalWrite(PIN_EPD_PWR, LOW);
+  delay(8000);
+  digitalWrite(PIN_EPD_PWR, HIGH);
+  delay(100);  // rails settle before the caller re-inits
+}
+
 bool Ssd1683Epd::busy() { return digitalRead(PIN_EPD_BUSY) == HIGH; }

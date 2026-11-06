@@ -66,6 +66,14 @@ class Ssd1683Epd : public EpdDriver {
   void waitIdle();
   bool busy() override;
 
+  // Hard power-cycle of the panel (PWR pin low, then back up) followed
+  // by re-init. Diagnostic tool for experiments with the panel power
+  // rail. Measured on 2026-11-06: a whole-screen inversion latch was
+  // NOT cleared by 8 s on this pin (only by removing board power), so
+  // this is not a recovery command for latched states. Call init()
+  // afterwards; the caller must invalidate the host shadow.
+  void powerCycle();
+
   // Keeps the shadow buffer in sync (used by the neutral fail-safe path
   // that redraws the same frame).
   const uint8_t* shadow() const { return shadow_; }

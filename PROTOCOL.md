@@ -64,10 +64,13 @@ negotiation.
 
 `features` is a capability bitmap: 0x0001 ACK (FRAME_ACK pacing), 0x0002
 SHADOW_CRC (shadow_crc in PONG, see Shadow consistency), 0x0004 TIME
-(clock on the neutral screen), 0x0008 RLE (reserved, not activated
-until it proves itself on real frames). The bits gate optional behavior
-within the same major version: the panel sets the bits for the features
-it implements and a host checks the bit before relying on a feature;
+(deprecated 2026-11-06: the reference firmware no longer renders a
+clock and never sets this bit; TIME is still accepted and validated
+but discarded, so old hosts keep working), 0x0008 RLE (reserved, not
+activated until it proves itself on real frames). The bits gate
+optional behavior within the same major version: the panel sets the
+bits for the features it implements and a host checks the bit before
+relying on a feature;
 bits a host does not know are ignored, so the bitmap is
 forward-compatible in both directions (an old host keeps working with a
 new panel and vice versa, gated to the common bits).
@@ -86,7 +89,7 @@ before that has no base to apply to), 1 after.
 | 0x14 | FULL_REFRESH  | empty; draw the next frame with a full refresh                 |
 | 0x15 | SET_CONFIG    | key=value tuples (below); answered with CONFIG_VALUE           |
 | 0x16 | HELLO         | protocol version (u8); answered with READY                     |
-| 0x17 | TIME          | hour, minute (u8 each); stores the clock, no ACK; in NEUTRAL redraws when the value changes |
+| 0x17 | TIME          | deprecated, no ACK: a valid value is accepted and discarded; a malformed one (bad length, hour > 23, minute > 59) still gets ERROR - wire hygiene is not relaxed |
 
 SET_CONFIG: repeating `key_len(1) key value_len(2 LE) value` tuples.
 The only known key so far is `hb_timeout`: the value is ASCII-decimal
@@ -192,8 +195,11 @@ on the same port - ERROR frames are binary-only.
 - The black/white inversion this SSD1683 cascade requires is the
   firmware driver's business; the protocol always carries 1 = black.
 - Orientation: the origin is the top-left corner of the 272-wide
-  portrait layout. Screen rotation is a config key (`rotate`), not a
-  different bitmap.
+  raster as streamed. The wire format has no rotation concept;
+  mounting orientation is a rendering convention. The reference host
+  renders in the panel's physical landscape (cable up) and transposes
+  to this raster, and the firmware draws its own screens (the neutral
+  clock) to match the same mounting.
 
 ## Refresh policy
 
@@ -221,32 +227,27 @@ successfully drawn FRAME_FULL switches the panel to
 DASHBOARD from any mode, including NEUTRAL: new content replaces the
 neutral screen. A FRAME_RECT composes over the current screen content:
 coming out of the built-in neutral screen with a rect lands the delta
-on top of the clock digits, so a host leaving the panel-side NEUTRAL
+on top of the ornament, so a host leaving the panel-side NEUTRAL
 must send a FRAME_FULL first - or accept the composite until the next
 full frame. Freshly connected hosts get this automatically (a
 reconnect starts with a forced full frame).
-The neutral screen itself is a white field plus a large HH:MM centered,
-once the host has set the clock (TIME 0x17). The panel has no RTC: at
-a heartbeat timeout the clock freezes at the last accepted value, and
-the timeout neutral screen marks the staleness by hiding the colon
-(HH MM); a TIME received while NEUTRAL redraws the full HH:MM, so the
-clock ticks on the neutral screen as long as the host keeps sending.
-While the host is alive the staleness is bounded by the TIME period
-(a lost TIME is re-sent on the next minute tick); a dead host leaves
-the stale time on the glass indefinitely. The clock carries the
-host's local wall time: NTP steps and DST changes propagate with the
-next minute tick, the panel never validates timezones.
-Both TIME-in-NEUTRAL and SET_MODE(NEUTRAL) start a wave without an ACK
-to pace the host (they are state-only commands). A frame the host
+The neutral screen itself is a white field plus a small built-in
+ornament (a landscape badge: frame, sun, mountains). There is no
+clock: the panel has no RTC, and a frozen wall time misleads, so the
+2026-11-06 decision dropped it. TIME (0x17) is deprecated - accepted,
+validated and discarded; hosts must not send it (the panel does not
+advertise FTR_TIME), and old hosts doing so are harmless.
+SET_MODE(NEUTRAL) starts a wave without an ACK
+to pace the host (it is a state-only command). A frame the host
 sends within ~3.5 s of such a command can be lost to the RX overflow
 (the 8 KB ring covers ~178 ms of traffic and the wave blocks the
 loop); a lost DRAW is detected via the missing FRAME_ACK and resent -
 that failure self-heals at the cost of one timeout. The state-only
 commands themselves are best-effort: the panel cannot detect their
-loss, so the host re-sends TIME on its period and can verify a mode
-change through the mode field of PONG. A host that draws right after
-setting the clock should wait for the wave (~3.5 s) or accept the
-resend. The same window deafens the button and encoder polls (they run
+loss, so the host can verify a mode change through the mode field of
+PONG. A host that draws right after setting the mode should wait for
+the wave (~3.5 s) or accept the resend. The same window deafens the
+button and encoder polls (they run
 in the same loop): short presses inside a wave are lost.
 
 ## Text debug mode

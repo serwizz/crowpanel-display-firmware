@@ -36,7 +36,7 @@ static const int PIN_ENC_CONF = 5;
 
 static void send_pong(uint8_t seq);
 static bool set_mode(uint8_t m);
-static void draw_neutral_builtin(const char* why, bool live);
+static void draw_neutral_builtin(const char* why);
 static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t seq);
 static void send_error(uint8_t seq, uint8_t code);
 static uint32_t crc32_update(const uint8_t* data, size_t len, uint32_t c);
@@ -109,9 +109,6 @@ static Ssd1683Epd epd;  // orientation defaults; flip flags after the marker che
 
 static uint8_t mode = MODE_SPLASH;
 static bool shadow_valid = false;  // true after the first FRAME_FULL after startup
-static bool clock_known = false;   // set by TIME; the panel has no RTC
-static bool clock_stale = false;   // drawn by the heartbeat timeout (colon hidden)
-static uint8_t clock_h = 0, clock_m = 0;
 static uint32_t frames_since_full = 0;
 static const uint32_t FULL_REFRESH_EVERY = 50;  // full refresh once per N frames
 static const uint32_t RECT_FULL_THRESHOLD = (uint32_t)EPD_WIDTH * EPD_HEIGHT / 2;
@@ -137,7 +134,7 @@ static bool set_mode(uint8_t m) {
     // switching to NEUTRAL must replace the content right away: the
     // heartbeat timer only draws while mode != NEUTRAL, so without an
     // immediate draw the old content would stay on the glass for good
-    draw_neutral_builtin("host set NEUTRAL", true);
+    draw_neutral_builtin("host set NEUTRAL");
     return true;
   }
   mode = m;
@@ -158,20 +155,26 @@ static void handle_text_line(char* line) {
                    (unsigned long)crc32_calc(epd.shadow(), FULL_FRAME_BYTES));
   } else if (!strncmp(line, "mode ", 5)) {
     set_mode(atoi(line + 5));
-  } else if (!strncmp(line, "time ", 5)) {
-    int h = -1, m = -1;
-    char tail = 0;
-    // %c in the format catches trailing garbage: "23:45x" must not pass
-    if (sscanf(line + 5, "%d:%d%c", &h, &m, &tail) == 2 && h >= 0 && h < 24 && m >= 0 && m < 60) {
-      bool changed = !clock_known || clock_h != (uint8_t)h || clock_m != (uint8_t)m || clock_stale;
-      clock_h = (uint8_t)h; clock_m = (uint8_t)m; clock_known = true;
-      if (mode == MODE_NEUTRAL && changed) draw_neutral_builtin("time update", true);
-    } else {
-      Serial0.printf("[rx] bad time: %s\n", line + 5);
-    }
   } else if (!strcmp(line, "refresh")) {
     force_full_next = true;
     Serial0.printf("[epd] full refresh on next frame\n");
+  } else if (!strcmp(line, "pwrcycle")) {
+    // Rate limit: rapid repeated power cycles are the incident class of
+    // 2026-11-06 (a whole-screen inversion latch); do not make it one
+    // command away. frame_buf is stale after a cycle but harmless - the
+    // firmware always redraws its own screens in full from frame_buf,
+    // and shadow_valid=false forces the host to send a full frame.
+    static uint32_t last_pwr_ms = 0;
+    if (millis() - last_pwr_ms < 30000) {
+      Serial0.printf("[epd] pwrcycle: refused, less than 30 s since the last one\n");
+      return;
+    }
+    last_pwr_ms = millis();
+    Serial0.printf("[epd] power cycling the panel\n");
+    epd.powerCycle();
+    epd.init();
+    shadow_valid = false;  // the glass is blank; a full frame must come first
+    Serial0.printf("[epd] power cycle done, shadow invalidated\n");
   } else if (!strcmp(line, "ackoff")) {
     ack_enabled = false;
     Serial0.printf("[epd] FRAME_ACK suppressed (ackoff)\n");
@@ -301,8 +304,8 @@ static void send_pong(uint8_t seq) {
 
 // READY v2: version + features (u16 LE) + shadow_valid
 static void send_ready(uint8_t seq) {
-  uint8_t p[4] = {PROTOCOL_VERSION, (uint8_t)((FTR_ACK | FTR_SHADOW_CRC | FTR_TIME) & 0xFF),
-                  (uint8_t)((FTR_ACK | FTR_SHADOW_CRC | FTR_TIME) >> 8), (uint8_t)shadow_valid};
+  uint8_t p[4] = {PROTOCOL_VERSION, (uint8_t)((FTR_ACK | FTR_SHADOW_CRC) & 0xFF),
+                  (uint8_t)((FTR_ACK | FTR_SHADOW_CRC) >> 8), (uint8_t)shadow_valid};
   send_up(CMD_READY, seq, p, 4);
 }
 
@@ -441,16 +444,12 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
       return true;
     }
     case CMD_TIME:
-      // state-only, no ACK (like SET_MODE). The value is
-      // stored in any mode; in NEUTRAL it redraws so the clock ticks
-      // (skipped when the value did not change)
+      // Deprecated 2026-11-06: the neutral screen shows no clock (a
+      // built-in ornament instead), FTR_TIME is not advertised, and the
+      // value is discarded. Kept accepting it so old hosts do not get
+      // an ERROR; validation still applies.
       if (len != 2) { send_error(seq, ERR_BAD_LENGTH); return false; }
       if (p[0] > 23 || p[1] > 59) { send_error(seq, ERR_BAD_VALUE); return false; }
-      {
-        bool changed = !clock_known || clock_h != p[0] || clock_m != p[1] || clock_stale;
-        clock_h = p[0]; clock_m = p[1]; clock_known = true;
-        if (mode == MODE_NEUTRAL && changed) draw_neutral_builtin("time update", true);
-      }
       return true;
     default:
       Serial0.printf("[rx] unknown command 0x%02x\n", cmd);
@@ -462,61 +461,76 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
 // ---------- neutral screen (privacy fail-safe) ----------
 
 // Same intent as neutral_frame() on the host: no personal data. White
-// screen plus a big HH:MM once the host has set the clock (TIME); the
-// panel has no RTC, so at a heartbeat timeout the clock freezes at the
-// last accepted value (documented v2 limitation, PROTOCOL.md).
+// screen plus a small built-in ornament - a landscape badge. No clock:
+// a frozen wall time misleads (the panel has no RTC), so the 2026-11-06
+// decision dropped it (TIME is deprecated, see the protocol docs).
 
-// 3x5 font, one font pixel is an 8x8 block; rows top-down, bit 2 = left
-// column, 1 = ink. Index 10 is the colon.
-static const uint8_t GLYPH3X5[11][5] = {
-    {0x07, 0x05, 0x05, 0x05, 0x07},  // 0
-    {0x02, 0x06, 0x02, 0x02, 0x07},  // 1
-    {0x07, 0x01, 0x07, 0x04, 0x07},  // 2
-    {0x07, 0x01, 0x07, 0x01, 0x07},  // 3
-    {0x05, 0x05, 0x07, 0x01, 0x01},  // 4
-    {0x07, 0x04, 0x07, 0x01, 0x07},  // 5
-    {0x07, 0x04, 0x07, 0x05, 0x07},  // 6
-    {0x07, 0x01, 0x01, 0x02, 0x02},  // 7
-    {0x07, 0x05, 0x07, 0x05, 0x07},  // 8
-    {0x07, 0x05, 0x07, 0x01, 0x07},  // 9
-    {0x00, 0x02, 0x00, 0x02, 0x00},  // :
-};
-
-// x is a multiple of 8: every 8x8 block covers exactly one byte per row
-static void draw_glyph(uint8_t* buf, uint8_t n, int16_t x, int16_t y) {
-  if (n == 10) {  // colon: two 8x8 squares
-    for (uint8_t r = 0; r < 5; r++)
-      if (GLYPH3X5[10][r])
-        for (uint8_t dy = 0; dy < 8; dy++)
-          buf[(size_t)(y + r * 8 + dy) * PROTO_STRIDE + (x >> 3)] = 0xFF;
-    return;
-  }
-  for (uint8_t r = 0; r < 5; r++)
-    for (uint8_t c = 0; c < 3; c++)
-      if (GLYPH3X5[n][r] & (4 >> c))
-        for (uint8_t dy = 0; dy < 8; dy++)
-          buf[(size_t)(y + r * 8 + dy) * PROTO_STRIDE + ((x + c * 8) >> 3)] = 0xFF;
+// Landscape mounting (cable at the top edge, workbench plan-stage8-
+// landscape): the wire raster is the panel's native 272x792 portrait and
+// reads on the glass rotated. Convention (the host renders the same
+// way): a landscape pixel (lx,ly) lands at wire (nx = ly, ny = lx).
+static void set_land_px(uint8_t* buf, int16_t lx, int16_t ly) {
+  buf[(size_t)lx * PROTO_STRIDE + (ly >> 3)] |= (uint8_t)(0x80 >> (ly & 7));
 }
 
-// live=false hides the colon: a heartbeat-timeout neutral screen shows
-// HH MM, marking the time as stale (the panel has no RTC and the host
-// went silent). A TIME update redraws with the colon.
-static void compose_clock(uint8_t* buf, bool live) {
-  const uint8_t glyphs[5] = {(uint8_t)(clock_h / 10), (uint8_t)(clock_h % 10), 10,
-                             (uint8_t)(clock_m / 10), (uint8_t)(clock_m % 10)};
-  int16_t x = 64;  // 4 digits of 24 + colon 8 + 4 gaps of 8 = 136, (272-136)/2 = 68 -> 64 keeps bytes aligned
-  for (uint8_t i = 0; i < 5; i++) {
-    if (glyphs[i] != 10 || live) draw_glyph(buf, glyphs[i], x, 376);  // (792-40)/2
-    x += (glyphs[i] == 10) ? 8 : 24;
-    x += 8;
+static void land_hline(uint8_t* buf, int16_t x0, int16_t x1, int16_t y) {
+  for (int16_t x = x0; x <= x1; x++) set_land_px(buf, x, y);
+}
+
+static void land_vline(uint8_t* buf, int16_t x, int16_t y0, int16_t y1) {
+  for (int16_t y = y0; y <= y1; y++) set_land_px(buf, x, y);
+}
+
+// Filled triangle: (ax,ay) is the apex, (bx,by)-(cx,cy) the base.
+static void land_tri(uint8_t* buf, int16_t ax, int16_t ay, int16_t bx,
+                     int16_t by, int16_t cx, int16_t cy) {
+  if (by <= ay) return;  // degenerate: the apex must sit above the base
+  for (int16_t y = ay; y <= by; y++) {
+    int16_t l = (int16_t)(ax + (int32_t)(bx - ax) * (y - ay) / (by - ay));
+    int16_t r = (int16_t)(ax + (int32_t)(cx - ax) * (y - ay) / (by - ay));
+    land_hline(buf, l, r, y);
   }
 }
 
-static void draw_neutral_builtin(const char* why, bool live) {
+// Circle outline of radius r (2 px wide).
+static void land_circle(uint8_t* buf, int16_t cx, int16_t cy, int16_t r) {
+  for (int16_t y = (int16_t)(cy - r - 1); y <= cy + r + 1; y++)
+    for (int16_t x = (int16_t)(cx - r - 1); x <= cx + r + 1; x++) {
+      int32_t d2 = (int32_t)(x - cx) * (x - cx) + (int32_t)(y - cy) * (y - cy);
+      if (d2 >= (int32_t)(r - 1) * (r - 1) && d2 <= (int32_t)(r + 1) * (r + 1))
+        set_land_px(buf, x, y);
+    }
+}
+
+// Badge: an open-corner square frame (128 px), a circle sun, two solid
+// mountain peaks, a ground line. Centered in the 792x272 landscape.
+static void draw_neutral_ornament(uint8_t* buf) {
+  const int16_t X0 = (792 - 128) / 2;  // 332
+  const int16_t Y0 = (272 - 128) / 2;  // 72
+  const int16_t CUT = 12;              // open-corner chamfer
+  for (int16_t i = CUT; i < 128 - CUT; i++) {
+    land_hline(buf, X0 + i, X0 + i + 1, Y0);
+    land_hline(buf, X0 + i, X0 + i + 1, Y0 + 1);
+    land_hline(buf, X0 + i, X0 + i + 1, Y0 + 126);
+    land_hline(buf, X0 + i, X0 + i + 1, Y0 + 127);
+  }
+  for (int16_t i = 0; i < 128; i++) {
+    land_vline(buf, X0, Y0 + i, Y0 + i + 1);
+    land_vline(buf, X0 + 1, Y0 + i, Y0 + i + 1);
+    land_vline(buf, X0 + 126, Y0 + i, Y0 + i + 1);
+    land_vline(buf, X0 + 127, Y0 + i, Y0 + i + 1);
+  }
+  land_circle(buf, X0 + 88, Y0 + 40, 14);                      // sun
+  land_tri(buf, X0 + 40, Y0 + 84, X0 + 12, Y0 + 112, X0 + 74, Y0 + 112);
+  land_tri(buf, X0 + 86, Y0 + 96, X0 + 54, Y0 + 112, X0 + 118, Y0 + 112);
+  land_hline(buf, X0 + 8, X0 + 120, Y0 + 112);
+  land_hline(buf, X0 + 8, X0 + 120, Y0 + 113);
+}
+
+static void draw_neutral_builtin(const char* why) {
   Serial0.printf("[fail-safe] %s - drawing neutral screen\n", why);
   memset(frame_buf, 0, FULL_FRAME_BYTES);  // 0 = white (protocol: 1 = black)
-  if (clock_known) compose_clock(frame_buf, live);
-  clock_stale = !live;  // a heartbeat-timeout clock must come back on the next TIME
+  draw_neutral_ornament(frame_buf);
   epd.drawFull(frame_buf, true);           // neutral always drives full
   frames_since_full = 0;  // a neutral wave is a full wave: anchor the period
   mode = MODE_NEUTRAL;
@@ -618,7 +632,7 @@ void loop() {
   // the content; the timer is also reset after drawing, so it does not
   // fire every loop iteration
   if (millis() - last_host_frame_ms > hb_timeout_s * 1000UL) {
-    if (mode != MODE_NEUTRAL) draw_neutral_builtin("no heartbeat", false);
+    if (mode != MODE_NEUTRAL) draw_neutral_builtin("no heartbeat");
     last_host_frame_ms = millis();
   }
 
