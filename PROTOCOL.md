@@ -199,7 +199,7 @@ on the same port - ERROR frames are binary-only.
   mounting orientation is a rendering convention. The reference host
   renders in the panel's physical landscape (cable up) and transposes
   to this raster, and the firmware draws its own screens (the neutral
-  clock) to match the same mounting.
+  ornament) to match the same mounting.
 
 ## Refresh policy
 
@@ -257,10 +257,14 @@ Lines travel over the same port, terminated by `\n`:
 - to the panel: `ping` - answered with one text line, exactly:
   `[pong] uptime=<ms> ms mode=<0|1|2> shadow_crc=0x<8 lowercase hex>`;
   `mode <0|1|2>`, `refresh` - the same actions without binary encoding
-  (`mode 2` draws the neutral screen at once); `time HH:MM` - sets the
-  panel clock (same effect as the binary TIME); `ackoff`/`ackon` -
-  suppress/re-enable FRAME_ACK (simulates a lost ACK to exercise the
-  host fallback: PING with last_drawn_seq);
+  (`mode 2` draws the neutral screen at once); `pwrcycle` - drops the
+  panel power pin for 8 s, restores it, re-initializes the glass to
+  white and invalidates the shadow (a power-rail diagnostic, not a
+  recovery: a latched inversion state survives this pin, measured
+  2026-11-06 - only removing board power clears it; refused more often
+  than once per 30 s); `ackoff`/`ackon` - suppress/re-enable FRAME_ACK
+  (simulates a lost ACK to exercise the host fallback: PING with
+  last_drawn_seq);
 - from the panel: firmware debug lines (`[epd]`, `[key]`, ... prefixes).
 
 ASCII lines never collide with the binary magic, so there is no

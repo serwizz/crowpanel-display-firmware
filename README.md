@@ -79,6 +79,8 @@ work without any binary encoding:
 ping          -> pong <uptime_ms> <mode>
 mode 2        -> switch mode (0 splash / 1 dashboard / 2 neutral)
 refresh       -> draw the next frame with a full refresh
+pwrcycle      -> drop panel power for 8 s and re-init the glass (diagnostic, 30 s rate limit)
+ackoff, ackon -> suppress / re-enable FRAME_ACK (lost-ACK fallback drill)
 ```
 
 Firmware debug lines (`[epd] ...`, `[rx] ...`, `[scan] ...`) travel
