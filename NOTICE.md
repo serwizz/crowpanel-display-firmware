@@ -18,3 +18,8 @@ addresses); the text in this repository is original.
 Trademarks: CrowPanel and Elecrow are trademarks of their respective
 owners. This is an independent project and is not affiliated with or
 endorsed by Elecrow.
+
+The built-in neutral image is Luo Mu's River Landscape in Autumn,
+converted to 1bpp for this panel. The original work is in the public
+domain and is available through Met Open Access:
+https://www.metmuseum.org/art/collection/search/51769

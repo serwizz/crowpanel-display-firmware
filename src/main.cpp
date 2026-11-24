@@ -17,6 +17,7 @@
 #include <Arduino.h>
 
 #include "protocol.h"
+#include "neutral_image.h"
 #include "ssd1683_epd.h"
 
 #ifndef SERIAL_BAUD
@@ -445,7 +446,7 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
     }
     case CMD_TIME:
       // Deprecated 2026-11-06: the neutral screen shows no clock (a
-      // built-in ornament instead), FTR_TIME is not advertised, and the
+      // built-in image instead), FTR_TIME is not advertised, and the
       // value is discarded. Kept accepting it so old hosts do not get
       // an ERROR; validation still applies.
       if (len != 2) { send_error(seq, ERR_BAD_LENGTH); return false; }
@@ -460,77 +461,14 @@ static bool handle_frame(uint8_t cmd, const uint8_t* p, uint16_t len, uint8_t se
 
 // ---------- neutral screen (privacy fail-safe) ----------
 
-// Same intent as neutral_frame() on the host: no personal data. White
-// screen plus a small built-in ornament - a landscape badge. No clock:
-// a frozen wall time misleads (the panel has no RTC), so the 2026-11-06
-// decision dropped it (TIME is deprecated, see the protocol docs).
-
-// Landscape mounting (cable at the top edge): the wire raster is the
-// panel's native 272x792 portrait and reads on the glass rotated.
-// Convention (the host renders the same way): a landscape pixel (lx,ly)
-// lands at wire (nx = ly, ny = lx).
-static void set_land_px(uint8_t* buf, int16_t lx, int16_t ly) {
-  buf[(size_t)lx * PROTO_STRIDE + (ly >> 3)] |= (uint8_t)(0x80 >> (ly & 7));
-}
-
-static void land_hline(uint8_t* buf, int16_t x0, int16_t x1, int16_t y) {
-  for (int16_t x = x0; x <= x1; x++) set_land_px(buf, x, y);
-}
-
-static void land_vline(uint8_t* buf, int16_t x, int16_t y0, int16_t y1) {
-  for (int16_t y = y0; y <= y1; y++) set_land_px(buf, x, y);
-}
-
-// Filled triangle: (ax,ay) is the apex, (bx,by)-(cx,cy) the base.
-static void land_tri(uint8_t* buf, int16_t ax, int16_t ay, int16_t bx,
-                     int16_t by, int16_t cx, int16_t cy) {
-  if (by <= ay) return;  // degenerate: the apex must sit above the base
-  for (int16_t y = ay; y <= by; y++) {
-    int16_t l = (int16_t)(ax + (int32_t)(bx - ax) * (y - ay) / (by - ay));
-    int16_t r = (int16_t)(ax + (int32_t)(cx - ax) * (y - ay) / (by - ay));
-    land_hline(buf, l, r, y);
-  }
-}
-
-// Circle outline of radius r (2 px wide).
-static void land_circle(uint8_t* buf, int16_t cx, int16_t cy, int16_t r) {
-  for (int16_t y = (int16_t)(cy - r - 1); y <= cy + r + 1; y++)
-    for (int16_t x = (int16_t)(cx - r - 1); x <= cx + r + 1; x++) {
-      int32_t d2 = (int32_t)(x - cx) * (x - cx) + (int32_t)(y - cy) * (y - cy);
-      if (d2 >= (int32_t)(r - 1) * (r - 1) && d2 <= (int32_t)(r + 1) * (r + 1))
-        set_land_px(buf, x, y);
-    }
-}
-
-// Badge: an open-corner square frame (128 px), a circle sun, two solid
-// mountain peaks, a ground line. Centered in the 792x272 landscape.
-static void draw_neutral_ornament(uint8_t* buf) {
-  const int16_t X0 = (792 - 128) / 2;  // 332
-  const int16_t Y0 = (272 - 128) / 2;  // 72
-  const int16_t CUT = 12;              // open-corner chamfer
-  for (int16_t i = CUT; i < 128 - CUT; i++) {
-    land_hline(buf, X0 + i, X0 + i + 1, Y0);
-    land_hline(buf, X0 + i, X0 + i + 1, Y0 + 1);
-    land_hline(buf, X0 + i, X0 + i + 1, Y0 + 126);
-    land_hline(buf, X0 + i, X0 + i + 1, Y0 + 127);
-  }
-  for (int16_t i = 0; i < 128; i++) {
-    land_vline(buf, X0, Y0 + i, Y0 + i + 1);
-    land_vline(buf, X0 + 1, Y0 + i, Y0 + i + 1);
-    land_vline(buf, X0 + 126, Y0 + i, Y0 + i + 1);
-    land_vline(buf, X0 + 127, Y0 + i, Y0 + i + 1);
-  }
-  land_circle(buf, X0 + 88, Y0 + 40, 14);                      // sun
-  land_tri(buf, X0 + 40, Y0 + 84, X0 + 12, Y0 + 112, X0 + 74, Y0 + 112);
-  land_tri(buf, X0 + 86, Y0 + 96, X0 + 54, Y0 + 112, X0 + 118, Y0 + 112);
-  land_hline(buf, X0 + 8, X0 + 120, Y0 + 112);
-  land_hline(buf, X0 + 8, X0 + 120, Y0 + 113);
-}
+// Same intent as neutral_frame() on the host: no personal data. The
+// built-in public-domain landscape is stored in the protocol wire format.
+// No clock: a frozen wall time misleads (the panel has no RTC), so the
+// 2026-11-06 decision dropped it (TIME is deprecated, see the docs).
 
 static void draw_neutral_builtin(const char* why) {
   Serial0.printf("[fail-safe] %s - drawing neutral screen\n", why);
-  memset(frame_buf, 0, FULL_FRAME_BYTES);  // 0 = white (protocol: 1 = black)
-  draw_neutral_ornament(frame_buf);
+  memcpy(frame_buf, NEUTRAL_IMAGE, FULL_FRAME_BYTES);
   epd.drawFull(frame_buf, true);           // neutral always drives full
   frames_since_full = 0;  // a neutral wave is a full wave: anchor the period
   mode = MODE_NEUTRAL;

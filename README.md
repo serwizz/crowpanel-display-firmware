@@ -9,10 +9,10 @@ host: send a new picture to change it, no reflashing.
 A privacy fail-safe is built in: if the host stops sending anything
 for `HB_TIMEOUT` seconds (default 120), the panel replaces the content
 with a neutral screen by itself. This covers an unplugged cable, a
-sleeping host, a crashed one. The neutral screen is a white field with
-a small built-in landscape ornament - deliberately no clock (the panel
-has no RTC, and stale time misleads; TIME 0x17 is retired, see
-PROTOCOL.md).
+sleeping host, a crashed one. The neutral screen is a built-in 1bpp
+landscape image (Luo Mu, River Landscape in Autumn, public domain) -
+deliberately no clock (the panel has no RTC, and stale time misleads;
+TIME 0x17 is retired, see PROTOCOL.md).
 
 ## What works (verified on real hardware)
 

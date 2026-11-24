@@ -199,7 +199,7 @@ on the same port - ERROR frames are binary-only.
   mounting orientation is a rendering convention. The reference host
   renders in the panel's physical landscape (cable up) and transposes
   to this raster, and the firmware draws its own screens (the neutral
-  ornament) to match the same mounting.
+  image) to match the same mounting.
 
 ## Refresh policy
 
@@ -227,13 +227,13 @@ successfully drawn FRAME_FULL switches the panel to
 DASHBOARD from any mode, including NEUTRAL: new content replaces the
 neutral screen. A FRAME_RECT composes over the current screen content:
 coming out of the built-in neutral screen with a rect lands the delta
-on top of the ornament, so a host leaving the panel-side NEUTRAL
+on top of the image, so a host leaving the panel-side NEUTRAL
 must send a FRAME_FULL first - or accept the composite until the next
 full frame. Freshly connected hosts get this automatically (a
 reconnect starts with a forced full frame).
-The neutral screen itself is a white field plus a small built-in
-ornament (a landscape badge: frame, sun, mountains). There is no
-clock: the panel has no RTC, and a frozen wall time misleads, so the
+The neutral screen itself is a built-in full-screen 1bpp landscape
+image. There is no clock: the panel has no RTC, and a frozen wall time
+misleads, so the
 2026-11-06 decision dropped it. TIME (0x17) is deprecated - accepted,
 validated and discarded; hosts must not send it (the panel does not
 advertise FTR_TIME), and old hosts doing so are harmless.
